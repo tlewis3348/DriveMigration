@@ -240,6 +240,44 @@ class TransferSession:
         print(f"Indexed {len(index)} Zotero document records successfully.")
         return index
 
+    def resolve_windows_namespace(self, filename: str) -> str:
+        """
+        Coordinates global namespace uniqueness. Calculates the necessary alpha suffix
+        and updates the shared ResearchFileContext state if a collision occurs.
+        """
+        # Load the file into the context machine once to initialize its properties
+        self.naming_context.load_file_context(filename)
+
+        # Generate the standard un-suffixed filename
+        candidate_name = self.naming_context.generate_windows_filename()
+
+        # If the standard name is unique, register it and exit immediately
+        if candidate_name not in self.used_names:
+            self.used_names.add(candidate_name)
+            return candidate_name
+
+        # A collision occurred. Loop until a clean alpha suffix slot is uncovered
+        ascii_pointer = 65  # ASCII for 'A'
+
+        while candidate_name in self.used_names:
+            if ascii_pointer > 90:  # Past "Z" -> Handle overflow (AA, AB, etc.)
+                cycle_count = (ascii_pointer - 65) // 26
+                remainder_offset = (ascii_pointer - 65) % 26
+                suffix = chr(65 + cycle_count - 1) + chr(65 + remainder_offset)
+            else:
+                suffix = chr(ascii_pointer)
+
+            # Feed the calculated suffix directly to the context state
+            self.naming_context.alpha_suffix = suffix
+
+            # Re-evaluate the filename string calculated by the context engine
+            candidate_name = self.naming_context.generate_windows_filename()
+            ascii_pointer += 1
+
+        self.used_names.add(candidate_name)
+        print(f"Prefix Collision Resolved: '{filename}' -> '{candidate_name}'")
+        return candidate_name
+
     def get_or_create_research_item(self, g_filename: str, onedrive_url: str, collection_id: str, z_index: Dict[str, str]) -> str:
         """
         Coordinates the verification, population, and synchronization of Zotero records
@@ -323,7 +361,13 @@ class ResearchFileContext:
         self.title: str = ""
         self.authors: List[str] = ["Unknown"]
         self.source: str = "Unsorted"
-        self.prefix: str = "0000.0.000"
+
+        # Protected internal base state
+        self._base_prefix: str = "0000.0.000"
+
+        # Public modifier state
+        self.alpha_suffix: str = ""
+
         self.full_date: Optional[str] = None
         self.page_number: Optional[str] = None
         self.is_research_format: bool = False
@@ -334,12 +378,17 @@ class ResearchFileContext:
             "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
         }
 
+    @property
+    def prefix(self) -> str:
+        return f"{self._base_prefix}{self.alpha_suffix}"
+
     def load_file_context(self, filename: str) -> None:
         """
         Ingests a raw Google Drive filename, extracts its metadata, 
         and calculates the true publication date from the filename prefix.
         """
         self.raw_input = filename
+        self.alpha_suffix = ""
         name_no_ext: str = os.path.splitext(filename)[0]
 
         pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s+(.+?)\s+-\s+([^,]+),\s+(.+)$"
@@ -352,7 +401,7 @@ class ResearchFileContext:
             self.title = title.strip()
             self.authors = [a.strip() for a in author_str.split("+")]
             self.source = source.strip()
-            self.prefix = f"{year_str}.{q_str}.{ref}"
+            self._base_prefix = f"{year_str}.{q_str}.{ref}"
             self.is_research_format = True
 
             # REVERSE CALCULATE: Map the prefix variables back to a real ISO date
@@ -366,7 +415,7 @@ class ResearchFileContext:
             self.title = name_no_ext
             self.authors = ["Unknown"]
             self.source = "Unsorted"
-            self.prefix = "0000.0.000"
+            self._base_prefix = "0000.0.000"
             self.full_date = None
             self.page_number = None
             self.is_research_format = False
@@ -382,7 +431,7 @@ class ResearchFileContext:
         self.page_number = pages.split("-")[0].strip() if pages else None
 
         # FORWARD CALCULATE: Map the ISO date to a structured YYYY.Q.REF string
-        self.prefix = self._calculate_prefix_from_date(self.full_date, self.page_number)
+        self._base_prefix = self._calculate_prefix_from_date(self.full_date, self.page_number)
         self.title = item_data.get("title", "")
         self.source = item_data.get("publisher", "")
 
@@ -479,6 +528,7 @@ class ResearchFileContext:
         elif page_ref:
             ref = page_ref
         return f"{year}.{quarter}.{ref}"
+    # endregion
 
 class FreeplaneMap:
     def __init__(self, root_text: str = "My Worldview", version: str = "1.9.13"):
