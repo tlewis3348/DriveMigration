@@ -170,6 +170,8 @@ class OneDriveClient:
             authority=self.authority
         )
 
+        self.service: Any = self.authenticate()
+
     def authenticate(self) -> None:
         """Authenticates the user and acquires the Graph API access token."""
         accounts: List[Dict[str, Any]] = self.app.get_accounts() # type: ignore
@@ -574,46 +576,40 @@ class FreeplaneMap:
 class TransferSession:
     # region: INITIALIZATION & CONFIGURATION
     def __init__(self):
-        # Get configuration strings natively from environment space
+        # 1. Load Environment Configuration
         self.google_creds_path: str = os.environ.get("GOOGLE_CREDS_PATH", "")
         self.ms_client_id: str = os.environ.get("MS_CLIENT_ID", "")
-        self.ms_client_secret: str = os.environ.get("MS_CLIENT_SECRET", "")
         self.ms_authority: str = os.environ.get("MS_AUTHORITY", "")
-        self.root_folder_id: str = os.environ.get("ROOT_FOLDER_ID", "")
-
         self.zotero_user_id: str = os.environ.get("ZOTERO_USER_ID", "")
         self.zotero_api_key: str = os.environ.get("ZOTERO_API_KEY", "")
+        self.root_folder_id: str = os.environ.get("ROOT_FOLDER_ID", "")
 
-        # Verify critical parameters are loaded
         if not all([
-                self.google_creds_path,
-                self.ms_client_id,
-                self.ms_client_secret,
-                self.zotero_user_id,
-                self.zotero_api_key
-            ]):
+                    self.google_creds_path,
+                    self.ms_client_id,
+                    self.ms_authority,
+                    self.zotero_user_id,
+                    self.zotero_api_key,
+                    self.root_folder_id
+                ]):
             raise EnvironmentError("Missing required environment configuration tokens inside .env file.")
 
-        # Initialize API Service Layer Clients
-        self.gdrive = GoogleDriveClient(self.google_creds_path) 
-        self.onedrive = OneDriveClient(self.ms_client_id, self.ms_authority)
-        self.zotero = ZoteroClient(self.zotero_user_id, self.zotero_api_key)
+        # 2. Instantiate API Service Clients (The Physical Layer)
+        # Note: GoogleDriveClient authenticates automatically during instantiation
+        self.gdrive: GoogleDriveClient = GoogleDriveClient(self.google_creds_path) 
+        self.onedrive: OneDriveClient = OneDriveClient(self.ms_client_id, self.ms_authority)
+        self.zotero: ZoteroClient = ZoteroClient(self.zotero_user_id, self.zotero_api_key)
 
-        # 3. Instantiate the single long-lived naming engine context
+        # 3. Instantiate Local Context Engines
         self.naming_context: ResearchFileContext = ResearchFileContext()
-
-        # 4. Initialize the Freeplane Map with a root node
         self.map_engine: FreeplaneMap = FreeplaneMap("My Life and Worldview")
 
-        # 5. Mappings
+        # 4. Initialize State & Memory Databases
         self.checkpoint: Dict[str, Any] = self._load_json(CHECKPOINT_FILE)
         self.zotero_map: Dict[str, str] = self._load_json(COLLECTION_MAP_FILE)
-
-        # Maps binary MD5 checksums -> OneDrive resource webUrls for global deduplication
         self.content_map: Dict[str, str] = self._load_json(CONTENT_MAP_FILE)
-
-        # In-memory namespace verification pool to avoid OneDrive name collisions
         self.used_names: Set[str] = self._initialize_used_names()
+        self.zotero_index: Dict[str, str] = {}
 
     def _load_json(self, filepath: str) -> Dict[str, Any]:
         if os.path.exists(filepath):
@@ -660,36 +656,13 @@ class TransferSession:
             raise
     # endregion
 
-    # region: AUTHENTICATION & API INTERACTION
-    def save_state(self) -> None:
-        """
-        Atomically saves both the checkpoint and Zotero folder mappings.
-        """
-        # Save the Checkpoint (The "Where am I?" data)
-        self._atomic_json_write(CHECKPOINT_FILE, self.checkpoint)
-
-        # Save the Zotero Map (The "What is the structure?" data)
-        self._atomic_json_write(COLLECTION_MAP_FILE, self.zotero_map)
-
-        # Save the Content Map (The "What is the content?" data)
-        self._atomic_json_write(CONTENT_MAP_FILE, self.content_map)
-
-        print("State successfully persisted to disk.")
-
-    def authenticate_all(self) -> None:
-        """Initializes both Google and Microsoft authentication."""
-        self._auth_google()
-        self._auth_microsoft()
-    # endregion
-
     # region: ZOTERO HELPERS
-    def build_zotero_index(self) -> Dict[str, str]:
+    def build_zotero_index(self) -> None:
         """
         Builds a memory map of the Zotero library to prevent duplicate item creation.
         Maps canonical keys (Title + Date + Author) to Zotero Item IDs.
         """
         print("Building local Zotero library index...")
-        self.zotero_index: Dict[str, str] = {}
 
         # 1. Fetch raw data from the client
         all_items: List[Dict[str, Any]] = self.zotero.get_all_items()
@@ -825,4 +798,17 @@ class TransferSession:
         self.used_names.add(candidate_name)
         print(f"Prefix Collision Resolved: '{filename}' -> '{candidate_name}'")
         return candidate_name
+
+    def save_state(self) -> None:
+        """
+        Persists the orchestrator's local state to disk.
+        Executes atomically after successful file uploads/folder creations.
+        """
+        # Save File Checkpoint
+        with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(self.checkpoint, f, indent=4)
+
+        # Save Zotero Structural Map
+        with open(COLLECTION_MAP_FILE, 'w', encoding='utf-8') as f:
+            json.dump(self.zotero_map, f, indent=4)    # endregion
     # endregion

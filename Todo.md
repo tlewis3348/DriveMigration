@@ -38,7 +38,7 @@ Decouple API-specific network logic from the main `TransferSession` state manage
     * The `OneDriveClient` would handle all interactions with the Microsoft Graph API, including authentication, file uploads (including chunked uploads), and any other OneDrive-specific operations. This separation ensures that Microsoft-specific logic is contained within its own class, improving code organization and maintainability.
 * [X] **Zotero Database Client**: Extract Zotero API networking into a new class (e.g., `ZoteroClient`).
     * The `ZoteroClient` would manage all interactions with the Zotero API, including creating/updating items, managing collections, and handling attachments. This separation allows for a clear distinction between Zotero-specific logic and the overall session management, making the codebase cleaner and more modular.
-* [ ] **Session Integration**: Update `TransferSession.__init__` to instantiate these three clients, passing them the necessary environment variables/credentials, so the session acts purely as the central orchestrator.
+* [X] **Session Integration**: Update `TransferSession.__init__` to instantiate these three clients, passing them the necessary environment variables/credentials, so the session acts purely as the central orchestrator.
 
 ## 6. The Engine: Recursive Traversal
 This is the heart of the script.
