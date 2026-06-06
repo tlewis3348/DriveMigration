@@ -14,9 +14,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow # type: ignore
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build # type: ignore
 from googleapiclient.http import MediaIoBaseDownload # type: ignore
-from requests.adapters import HTTPAdapter
 from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib3.util.retry import Retry
 from urllib.parse import quote
 from dotenv import load_dotenv
 
@@ -247,6 +245,69 @@ class OneDriveClient:
                     raise RuntimeError(f"Failed to upload chunk {start}-{end} after {max_retries} attempts.")
 
         return last_response.json().get("webUrl", "") if last_response else ""
+
+class ZoteroClient:
+    """Handles all network interactions and rate-limiting for the Zotero API."""
+
+    def __init__(self, user_id: str, api_key: str):
+        if not user_id or not api_key:
+            raise ValueError("Zotero User ID and API Key are required.")
+
+        self.base_url: str = f"https://api.zotero.org/users/{user_id}/"
+        self.session: requests.Session = requests.Session()
+        self.session.headers.update({
+            "Zotero-API-Key": api_key,
+            "Content-Type": "application/json"
+        })
+
+    def request(self, method: str, endpoint: str, **kwargs: Any) -> requests.Response:
+        """Base HTTP wrapper with built-in exponential backoff for 429 rate limits."""
+        url: str = f"{self.base_url}{endpoint}"
+        max_retries: int = 5
+
+        for attempt in range(max_retries):
+            response = self.session.request(method, url, **kwargs)
+
+            if response.status_code == 429:
+                wait_time: int = int(response.headers.get("Retry-After", 2 ** attempt))
+                print(f"Zotero rate limit hit. Waiting {wait_time}s...")
+                time.sleep(wait_time)
+                continue
+
+            response.raise_for_status()
+            return response
+
+        raise RuntimeError(f"Zotero request failed after {max_retries} attempts.")
+
+    def create_collection(self, name: str, parent_id: Optional[str] = None) -> str:
+        """Creates a new collection folder in Zotero and returns its key."""
+        payload: Dict[str, Any] = {"name": name}
+        if parent_id:
+            payload["parentCollection"] = parent_id
+
+        response = self.request("POST", "collections", json=[payload])
+        return response.json()["successful"]["0"]["key"]
+
+    def get_item(self, item_key: str) -> Dict[str, Any]:
+        """Fetches the raw schema data for a specific item."""
+        return self.request("GET", f"items/{quote(item_key)}").json()["data"]
+
+    def update_item(self, item_key: str, item_data: Dict[str, Any]) -> None:
+        """Pushes an updated schema payload back to an existing item."""
+        self.request("PUT", f"items/{quote(item_key)}", json=item_data)
+
+    def get_children(self, item_key: str) -> List[Dict[str, Any]]:
+        """Fetches all child attachments or notes for an item."""
+        return self.request("GET", f"items/{quote(item_key)}/children").json()
+
+    def delete_item(self, item_key: str) -> None:
+        """Permanently deletes an item or attachment."""
+        self.request("DELETE", f"items/{quote(item_key)}")
+
+    def create_item(self, payload: Dict[str, Any]) -> str:
+        """Creates a new record (document or attachment) and returns its key."""
+        response = self.request("POST", "items", json=[payload])
+        return response.json()["successful"]["0"]["key"]
 
 class ResearchFileContext:
     def __init__(self, filename_limit: int = 200, extension: str = ".pdf"):
@@ -517,24 +578,10 @@ class TransferSession:
             ]):
             raise EnvironmentError("Missing required environment configuration tokens inside .env file.")
 
-        # 1. Initialize Zotero Session with Global Headers
-        self.ms_token: Optional[str] = None
-        self.zotero_session: requests.Session = requests.Session()
-        self.zotero_session.headers.update({
-            "Zotero-API-Key": self.zotero_api_key,
-            "Content-Type": "application/json"
-        })
-
-        # 2. Configure Retries and Timeouts for resilience
-        # This handles transient network "burps" without manual intervention
-        retry_strategy: Retry = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST", "PUT"]
-        )
-        adapter: HTTPAdapter = HTTPAdapter(max_retries=retry_strategy)
-        self.zotero_session.mount("https://", adapter)
+        # Initialize API Service Layer Clients
+        self.gdrive = GoogleDriveClient(self.google_creds_path) 
+        self.onedrive = OneDriveClient(self.ms_client_id, self.ms_authority)
+        self.zotero = ZoteroClient(self.zotero_user_id, self.zotero_api_key)
 
         # 3. Instantiate the single long-lived naming engine context
         self.naming_context: ResearchFileContext = ResearchFileContext()
@@ -620,29 +667,6 @@ class TransferSession:
     # endregion
 
     # region: ZOTERO HELPERS
-    def zotero_request(self, method: str, endpoint: str, **kwargs: Any) -> requests.Response:
-        """
-        Executes a Zotero API call with a mandatory timeout and rate-limit delay.
-        """
-        # Ensure we always have a reasonable timeout (e.g., 30 seconds)
-        if "timeout" not in kwargs:
-            kwargs["timeout"] = 30
-
-        url = f"https://api.zotero.org/users/{self.zotero_user_id}/{endpoint}"
-
-        try:
-            response = self.zotero_session.request(method, url, **kwargs)
-            response.raise_for_status()
-
-            # MANDATORY RATE LIMIT: 
-            # Zotero allows ~50 requests per min; 0.5s-1s delay is a safe conservative buffer.
-            time.sleep(0.7) 
-
-            return response
-        except requests.exceptions.RequestException as e:
-            print(f"Zotero API Error at {endpoint}: {str(e)}")
-            raise
-
     def build_zotero_index(self) -> Dict[str, str]:
         """
         Scans the Zotero web library on startup to build a local memory index.
@@ -655,7 +679,7 @@ class TransferSession:
 
         while True:
             endpoint: str = f"items?itemType=document&limit={limit}&start={start}"
-            resp: List[Dict[str, Any]] = self.zotero_request("GET", endpoint).json()
+            resp: List[Dict[str, Any]] = self.zotero.request("GET", endpoint).json()
 
             if not resp:
                 break
@@ -678,21 +702,17 @@ class TransferSession:
         Resolves a folder name to a Zotero Collection ID. 
         Creates the collection if it does not exist and persists the mapping.
         """
-        path_key = f"{parent_id or 'ROOT'}/{name}"
+        path_key: str = f"{parent_id or 'ROOT'}/{name}"
 
         if path_key in self.zotero_map:
             return self.zotero_map[path_key]
 
-        payload: Dict[str, Any] = {
-            "name": name, 
-            "parentCollection": parent_id
-        }
+        # Delegate the actual API creation to the client
+        new_id: str = self.zotero.create_collection(name, parent_id)
 
-        response: requests.Response = self.zotero_request("POST", "collections", json=[payload])
-        new_id: str = response.json()["successful"]["0"]["key"]
-
+        # Manage the persistent state orchestrator
         self.zotero_map[path_key] = new_id
-        self.save_state()  # Persist structural changes immediately
+        self.save_state()
         return new_id
 
     def get_or_create_research_item(self, g_filename: str, onedrive_url: str, collection_id: str, z_index: Dict[str, str]) -> str:
@@ -700,39 +720,31 @@ class TransferSession:
         Coordinates the verification, population, and synchronization of Zotero records
         leveraging the internal naming state.
         """
-        # 1. Load the incoming file from Google Drive into our state machine
         self.naming_context.load_file_context(g_filename)
-
-        # Extract the lookup token to see if this document already exists in Zotero
         lookup_key: str = self.naming_context.get_canonical_key()
         item_key: Optional[str] = z_index.get(lookup_key)
 
         if item_key:
-            # Pull the raw item metadata schema from the web api
-            item_data: Dict[str, Any] = self.zotero_request("GET", f"items/{quote(item_key)}").json()["data"]
-
-            # Re-assign the collections block to place it into the new mirrored structure
+            # Update existing item
+            item_data: Dict[str, Any] = self.zotero.get_item(item_key)
             item_data["collections"] = [collection_id]
-
-            # If our filename contained a valid chronological D-day prefix, update the database
             if self.naming_context.full_date:
                 item_data["date"] = self.naming_context.full_date
 
-            self.zotero_request("PUT", f"items/{quote(item_key)}", json=item_data)
+            self.zotero.update_item(item_key, item_data)
             print(f"Moved existing Zotero item: {self.naming_context.title}")
 
-            # Flush out historical attachment pointers to prevent stale Google Drive links
-            children = self.zotero_request("GET", f"items/{quote(item_key)}/children").json()
+            # Flush stale attachments
+            children: List[Dict[str, Any]] = self.zotero.get_children(item_key)
             for child in children:
                 if child["data"].get("itemType") == "attachment":
-                    self.zotero_request("DELETE", f"items/{quote(child['key'])}")
+                    self.zotero.delete_item(child['key'])
         else:
-            # Construct the schema properties strictly using internal context state
-            creators: List[Dict[str, str]] = []
-            for author in self.naming_context.authors:
-                creators.append({"creatorType": "author", "lastName": author})
+            # Create new item
+            creators: List[Dict[str, str]] = [
+                {"creatorType": "author", "lastName": author} for author in self.naming_context.authors
+            ]
 
-            # Build clean metadata fields utilizing calculated chronological fallbacks
             new_item_payload: Dict[str, Any] = {
                 "itemType": "document",
                 "title": self.naming_context.title,
@@ -742,19 +754,15 @@ class TransferSession:
                 "publisher": self.naming_context.source
             }
 
-            # Map page numbers directly to Zotero's formal 'pages' field
             if self.naming_context.page_number:
                 new_item_payload["pages"] = self.naming_context.page_number
-
-            # Store the entire prefix string as a legacy reference anchor
             if self.naming_context.is_research_format:
                 new_item_payload["extra"] = f"Prefix: {self.naming_context.prefix}"
 
-            create_resp: requests.Response = self.zotero_request("POST", "items", json=[new_item_payload])
-            item_key: Optional[str] = create_resp.json()["successful"]["0"]["key"]
+            item_key = self.zotero.create_item(new_item_payload)
             print(f"Created new Zotero item: {self.naming_context.title}")
 
-        # 2. ATTACH RE-MAPPED ONEDRIVE POINTER
+        # Attach OneDrive link
         attachment_payload: Dict[str, Any] = {
             "itemType": "attachment",
             "linkMode": "linked_url",
@@ -763,9 +771,8 @@ class TransferSession:
             "url": onedrive_url,
             "collections": [collection_id]
         }
-        self.zotero_request("POST", "items", json=[attachment_payload])
+        self.zotero.create_item(attachment_payload)
 
-        # Return the definitive select link for your Freeplane map node
         return f"zotero://select/library/items/{item_key}"
     # endregion
 
