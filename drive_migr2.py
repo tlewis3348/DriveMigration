@@ -30,6 +30,130 @@ CONTENT_MAP_FILE: str = "content_map.json"
 load_dotenv()
 # endregion
 
+class GoogleDriveClient:
+    """Handles all authentication, traversal, and download operations for the Google Drive API."""
+
+    # We only need read permissions for the migration
+    SCOPES: List[str] = ['https://www.googleapis.com/auth/drive.readonly']
+
+    def __init__(self, client_secrets_path: str, token_cache_path: str = "token.json"):
+        """Initializes the client and builds the authenticated service."""
+        if not client_secrets_path or not os.path.exists(client_secrets_path):
+            raise FileNotFoundError(f"Google client secrets not found at: {client_secrets_path}")
+
+        self.service: Any = self._authenticate(client_secrets_path, token_cache_path)
+
+    def _authenticate(self, client_secrets_path: str, token_cache_path: str) -> Any:
+        """Manages the OAuth2 handshake and local token caching."""
+        creds: Optional[Credentials] = None
+
+        # Load cached credentials if they exist
+        if os.path.exists(token_cache_path):
+            creds = Credentials.from_authorized_user_file(token_cache_path, self.SCOPES) # type: ignore
+
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token: # type: ignore
+                creds.refresh(Request()) # type: ignore
+            else:
+                flow: InstalledAppFlow = InstalledAppFlow.from_client_secrets_file(client_secrets_path, self.SCOPES) # type: ignore
+                creds: Optional[Credentials] = flow.run_local_server(port=0) # type: ignore
+
+            # Save the credentials for the next run
+            with open(token_cache_path, 'w') as token:
+                token.write(creds.to_json()) # type: ignore
+
+        return build('drive', 'v3', credentials=creds) # type: ignore
+
+    def get_folder_name(self, folder_id: str) -> str:
+        """Queries Google Drive for the native name of a specific folder."""
+        try:
+            response: Dict[str, Any] = self.service.files().get(
+                fileId=folder_id, 
+                fields="name"
+            ).execute()
+            return response.get("name", "Unknown Folder")
+        except Exception as e:
+            print(f"Error getting folder name for {folder_id}: {e}")
+            return "Unknown Folder"
+
+    def get_children(self, folder_id: str) -> List[Dict[str, Any]]:
+        """Pulls all child items (files, folders, shortcuts) within a Google Drive directory."""
+        results: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+
+        while True:
+            response: Dict[str, Any] = self.service.files().list(
+                q=f"'{folder_id}' in parents",
+                fields="nextPageToken, files(id, name, mimeType, shortcutDetails)",
+                pageToken=page_token
+            ).execute()
+
+            results.extend(response.get("files", []))
+
+            page_token: Optional[str] = response.get("nextPageToken")
+            if not page_token:
+                break
+
+        return results
+
+    def download_file(self, file_id: str, mime_type: str, file_name: str) -> Optional[Tuple[bytes, str]]:
+        """
+        Downloads a file into a memory buffer. 
+        Automatically converts Google Workspace formats to standard Office XML formats.
+        """
+        export_map: Dict[str, Dict[str, str]] = {
+            "application/vnd.google-apps.document": {
+                "target": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 
+                "ext": ".docx"
+            },
+            "application/vnd.google-apps.spreadsheet": {
+                "target": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+                "ext": ".xlsx"
+            },
+            "application/vnd.google-apps.presentation": {
+                "target": "application/vnd.openxmlformats-officedocument.presentationml.presentation", 
+                "ext": ".pptx"
+            },
+            "application/vnd.google-apps.drawing": {
+                "target": "image/png", 
+                "ext": ".png"
+            }
+        }
+
+        buffer: io.BytesIO = io.BytesIO()
+
+        if mime_type in export_map:
+            request: Any = self.service.files().export_media(fileId=file_id, mimeType=export_map[mime_type]["target"])
+            ext: str = export_map[mime_type]["ext"]
+            if not file_name.lower().endswith(ext):
+                file_name: str = f"{file_name}{ext}"
+        elif mime_type.startswith("application/vnd.google-apps."):
+            print(f"Skipping non-exportable Google file: {file_name} ({mime_type})")
+            return None
+        else:
+            request: Any = self.service.files().get_media(fileId=file_id)
+
+        downloader: MediaIoBaseDownload = MediaIoBaseDownload(buffer, request)
+        done: bool = False
+        max_retries: int = 5
+
+        while not done:
+            for attempt in range(max_retries):
+                try:
+                    _, done = downloader.next_chunk()
+                    break
+                except (ConnectionResetError, Exception) as e:
+                    if attempt < max_retries - 1:
+                        wait_time: int = 2 ** attempt
+                        print(f"Download error ({type(e).__name__}). Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"Permanent download failure after {max_retries} attempts.")
+                        raise
+
+        return buffer.getvalue(), file_name
+
 class ResearchFileContext:
     def __init__(self, filename_limit: int = 200, extension: str = ".pdf"):
         self.limit: int = filename_limit
@@ -279,7 +403,7 @@ class FreeplaneMap:
 class TransferSession:
     # region: INITIALIZATION & CONFIGURATION
     def __init__(self):
-        # Fetch configuration strings natively from environment space
+        # Get configuration strings natively from environment space
         self.google_creds_path: str = os.environ.get("GOOGLE_CREDS_PATH", "")
         self.ms_client_id: str = os.environ.get("MS_CLIENT_ID", "")
         self.ms_client_secret: str = os.environ.get("MS_CLIENT_SECRET", "")
@@ -399,121 +523,6 @@ class TransferSession:
         """Initializes both Google and Microsoft authentication."""
         self._auth_google()
         self._auth_microsoft()
-    # endregion
-
-    # region: GOOGLE DRIVE HELPERS
-    def _auth_google(self) -> None:
-        scopes: List[str] = ["https://www.googleapis.com/auth/drive.readonly"]
-        creds: Optional[Credentials] = None # type: ignore
-        token_path: str = "token_google.json"
-
-        if os.path.exists(token_path):
-            creds: Optional[Credentials] = Credentials.from_authorized_user_file(token_path, scopes)  # type: ignore
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:  # type: ignore
-                creds.refresh(Request())  # type: ignore
-            else:
-                flow: InstalledAppFlow = InstalledAppFlow.from_client_secrets_file(self.google_creds_path, scopes)  # type: ignore
-                creds: Credentials = flow.run_local_server(port=0)  # type: ignore
-
-            with open(token_path, "w") as token:
-                token.write(creds.to_json())  # type: ignore
-
-        self.g_service: Any = build("drive", "v3", credentials=creds)
-
-    def _get_gdrive_folder_name(self, folder_id: str) -> str:
-        """Queries Google Drive for the native name of a specific folder."""
-        try:
-            response: Dict[str, Any] = self.g_service.files().get(
-                fileId=folder_id, 
-                fields="name"
-            ).execute()
-            return response.get("name", "Unknown Folder")
-        except Exception as e:
-            print(f"Error fetching folder name for {folder_id}: {e}")
-            return "Unknown Folder"
-
-    def _fetch_gdrive_children(self, folder_id: str) -> List[Dict[str, Any]]:
-        """Pulls all child items (files, folders, shortcuts) within a Google Drive directory."""
-        results: List[Dict[str, Any]] = []
-        page_token: Optional[str] = None
-
-        while True:
-            response: Dict[str, Any] = self.g_service.files().list(
-                q=f"'{folder_id}' in parents",
-                fields="nextPageToken, files(id, name, mimeType, shortcutDetails)",
-                pageToken=page_token
-            ).execute()
-
-            results.extend(response.get("files", []))
-
-            page_token = response.get("nextPageToken")
-            if not page_token:
-                break
-
-        return results
-
-    def _download_gdrive_file(self, file_id: str, mime_type: str, file_name: str) -> Optional[Tuple[bytes, str]]:
-        """
-        Downloads a file into a memory buffer. 
-        Automatically converts Google Workspace formats to standard Office XML formats.
-        """
-
-        export_map: Dict[str, Dict[str, str]] = {
-            "application/vnd.google-apps.document": {
-                "target": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", 
-                "ext": ".docx"
-            },
-            "application/vnd.google-apps.spreadsheet": {
-                "target": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                "ext": ".xlsx"
-            },
-            "application/vnd.google-apps.presentation": {
-                "target": "application/vnd.openxmlformats-officedocument.presentationml.presentation", 
-                "ext": ".pptx"
-            },
-            "application/vnd.google-apps.drawing": {
-                "target": "image/png", 
-                "ext": ".png"
-            }
-        }
-
-        buffer = io.BytesIO()
-
-        if mime_type in export_map:
-            # Google-native files must be exported
-            request = self.g_service.files().export_media(fileId=file_id, mimeType=export_map[mime_type]["target"])
-            ext = export_map[mime_type]["ext"]
-            if not file_name.lower().endswith(ext):
-                file_name += ext
-        elif mime_type.startswith("application/vnd.google-apps."):
-            # Skip forms, maps, sites, etc.
-            print(f"Skipping non-exportable Google file: {file_name} ({mime_type})")
-            return None
-        else:
-            # Standard binary files are downloaded directly
-            request = self.g_service.files().get_media(fileId=file_id)
-
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-        max_retries = 5
-
-        while not done:
-            for attempt in range(max_retries):
-                try:
-                    _, done = downloader.next_chunk()
-                    break
-                except (ConnectionResetError, Exception) as e:
-                    if attempt < max_retries - 1:
-                        wait_time = 2 ** attempt
-                        print(f"Download error ({type(e).__name__}). Retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"Permanent download failure after {max_retries} attempts.")
-                        raise
-
-        return buffer.getvalue(), file_name
     # endregion
 
     # region: MICROSOFT GRAPH HELPERS

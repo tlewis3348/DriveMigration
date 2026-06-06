@@ -32,7 +32,7 @@ This layer handles the "Google Earth" zooming effect by generating a valid `.mm`
 
 ## 5. The API Service Layer (The Physical Transport)
 Decouple API-specific network logic from the main `TransferSession` state manager into dedicated service classes to prevent a "God Object" architecture.
-* [ ] **Google Drive Client**: Extract Google-specific methods into a new class (e.g., `GoogleDriveClient`).
+* [X] **Google Drive Client**: Extract Google-specific methods into a new class (e.g., `GoogleDriveClient`).
     * The `GoogleDriveClient` would be responsible for all interactions with the Google Drive API, including authentication, fetching folder contents, and downloading files. This separation allows Google-specific logic to be isolated and makes it easier to maintain or swap out the Google Drive API in the future if needed.
 * [ ] **Microsoft Graph / OneDrive Client**: Extract Microsoft-specific methods into a new class (e.g., `OneDriveClient`).
     * The `OneDriveClient` would handle all interactions with the Microsoft Graph API, including authentication, file uploads (including chunked uploads), and any other OneDrive-specific operations. This separation ensures that Microsoft-specific logic is contained within its own class, improving code organization and maintainability.
