@@ -32,6 +32,10 @@ This layer handles the "Google Earth" zooming effect.
 
 ## 5. The Engine: Recursive Traversal
 This is the heart of the script.
+* [X] **API Transport Prerequisites (The Physical Layer)**:
+    * Directory resolution methods (`_get_gdrive_folder_name`, `get_or_create_zotero_collection`).
+    * Memory-buffer data fetchers (`_fetch_gdrive_children`, `_download_gdrive_file` with Workspace conversions).
+    * Microsoft Graph chunked session uploader (`_upload_onedrive_file`).
 * [ ] **Decoupled Folder/File Logic**:
     * The `traverse()` function should only handle the recursion and folder creation.
     * Move the "File Processing" (download, upload, zotero, xml) into a separate function called `process_file()`.
