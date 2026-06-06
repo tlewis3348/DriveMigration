@@ -20,33 +20,39 @@ This is where you handle the "Relationist" documentation of your worldview resea
 * [X] **Rate Limiter**: Add a decorator or a small helper to ensure every Zotero API call is followed by a `time.sleep(0.5)` to avoid throttling on large batches.
 
 ## 3. The Visual Layer: Freeplane XML
-This layer handles the "Google Earth" zooming effect.
-* [X] **Attribute-Based Node Function**: Create a function `add_styled_node()` that takes a `depth` integer.
-    * Instead of hard-coding style names, have it always add an XML Attribute `NAME="Depth" VALUE="x"`. 
+This layer handles the "Google Earth" zooming effect by generating a valid `.mm` file structure.
+* [x] **Object-Oriented Map Engine**: Encapsulate the XML generation inside a `FreeplaneMap` class with a nested `MapNode` object to cleanly track parent-child hierarchical relationships.
+* [x] **Attribute-Based Node Depth**: Have the `MapNode.add_child()` method automatically calculate integer depth, and the `render()` method inject the XML `<attribute NAME="Depth" VALUE="x"/>`.
     * This allows you to control the "fade into obscurity" entirely within Freeplane using its **Conditional Styles** engine later.
-* [X] **Link Prioritizer**: Create a helper that determines the "Best Link" for a node (Priority: Zotero URI > OneDrive webUrl).
+* [x] **Link Prioritizer**: Create a static helper (`get_best_link`) that determines the "Best Link" for a node before attachment (Priority: Zotero URI > OneDrive webUrl).
 
 ## 4. Preparation: Checkpointing & Deduplication
 * [X] **Define Hashing & Content Mapping State**: Section 4 requires a `content_map` to handle global deduplication. You need to initialize a `self.content_map: Dict[str, str] = {}` property in `TransferSession.__init__` to store file hashes (`md5Checksum` from Google Drive metadata) and map them to their uploaded OneDrive URLs.
 * [X] **Define Name Tracking Pools (`used_names`)**: To prevent filesystem name collisions when multiple different Google Drive documents truncate down to the exact same Windows filename, your upcoming file processing logic will need an in-memory tracking set (`self.used_names: Set[str] = set()`) to handle unique index validation.
 
-## 5. The Engine: Recursive Traversal
+## 5. The API Service Layer (The Physical Transport)
+Decouple API-specific network logic from the main `TransferSession` state manager into dedicated service classes to prevent a "God Object" architecture.
+* [ ] **Google Drive Client**: Extract Google-specific methods into a new class (e.g., `GoogleDriveClient`).
+    * The `GoogleDriveClient` would be responsible for all interactions with the Google Drive API, including authentication, fetching folder contents, and downloading files. This separation allows Google-specific logic to be isolated and makes it easier to maintain or swap out the Google Drive API in the future if needed.
+* [ ] **Microsoft Graph / OneDrive Client**: Extract Microsoft-specific methods into a new class (e.g., `OneDriveClient`).
+    * The `OneDriveClient` would handle all interactions with the Microsoft Graph API, including authentication, file uploads (including chunked uploads), and any other OneDrive-specific operations. This separation ensures that Microsoft-specific logic is contained within its own class, improving code organization and maintainability.
+* [ ] **Zotero Database Client**: Extract Zotero API networking into a new class (e.g., `ZoteroClient`).
+    * The `ZoteroClient` would manage all interactions with the Zotero API, including creating/updating items, managing collections, and handling attachments. This separation allows for a clear distinction between Zotero-specific logic and the overall session management, making the codebase cleaner and more modular.
+* [ ] **Session Integration**: Update `TransferSession.__init__` to instantiate these three clients, passing them the necessary environment variables/credentials, so the session acts purely as the central orchestrator.
+
+## 6. The Engine: Recursive Traversal
 This is the heart of the script.
-* [X] **API Transport Prerequisites (The Physical Layer)**:
-    * Directory resolution methods (`_get_gdrive_folder_name`, `get_or_create_zotero_collection`).
-    * Memory-buffer data fetchers (`_fetch_gdrive_children`, `_download_gdrive_file` with Workspace conversions).
-    * Microsoft Graph chunked session uploader (`_upload_onedrive_file`).
 * [ ] **Decoupled Folder/File Logic**:
     * The `traverse()` function should only handle the recursion and folder creation.
     * Move the "File Processing" (download, upload, zotero, xml) into a separate function called `process_file()`.
 * [ ] **Global Deduplication**: Before uploading any file, check the `content_map` (hashed IDs). If a match is found, create a "Shortcut Node" in Freeplane that points to the original Zotero URI.
 * [ ] **Checkpoint Integrity**: Ensure the checkpoint is updated *only after* both the OneDrive upload and Zotero documentation are successful. This prevents "half-migrated" entries.
 
-## 6. Final Assembly: The Main Flow
+## 7. Final Assembly: The Main Flow
 * [ ] Implement a "Dry Run" flag in your config. This allows you to test the hierarchy generation in Freeplane without actually uploading files or calling the Zotero API.
 * [ ] Setup the `root_map` with the correct Freeplane XML version and a single central "Worldview" node.
 
-## 7. Post-Migration: Freeplane Setup
+## 8. Post-Migration: Freeplane Setup
 * [ ] **Define Conditional Styles**: Once the script runs, open Freeplane and create rules like: *"If Attribute 'Depth' > 3, then set Font Size = 8pt and Opacity = 40%"*. This completes your vision for the "Semantic Zoom."
 
 # Future Improvements

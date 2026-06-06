@@ -2,7 +2,6 @@ import os
 import io
 import json
 import msal # type: ignore
-import xml.etree.ElementTree as ET
 import re
 import time
 import hashlib
@@ -30,6 +29,252 @@ CONTENT_MAP_FILE: str = "content_map.json"
 # Load environment variables
 load_dotenv()
 # endregion
+
+class ResearchFileContext:
+    def __init__(self, filename_limit: int = 200, extension: str = ".pdf"):
+        self.limit: int = filename_limit
+        self.ext: str = extension
+
+        # Unified State Configuration representing the active file being handled
+        self.raw_input: str = ""
+        self.title: str = ""
+        self.authors: List[str] = ["Unknown"]
+        self.source: str = "Unsorted"
+
+        # Protected internal base state
+        self._base_prefix: str = "0000.0.000"
+
+        # Public modifier state
+        self.alpha_suffix: str = ""
+
+        self.full_date: Optional[str] = None
+        self.page_number: Optional[str] = None
+        self.is_research_format: bool = False
+
+        self.reserved_names: Set[str] = {
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
+            "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        }
+
+    @property
+    def prefix(self) -> str:
+        return f"{self._base_prefix}{self.alpha_suffix}"
+
+    def load_file_context(self, filename: str) -> None:
+        """
+        Ingests a raw Google Drive filename, extracts its metadata, 
+        and calculates the true publication date from the filename prefix.
+        """
+        self.raw_input = filename
+        self.alpha_suffix = ""
+        name_no_ext: str = os.path.splitext(filename)[0]
+
+        pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s+(.+?)\s+-\s+([^,]+),\s+(.+)$"
+        match: Optional[re.Match[str]] = re.match(pattern, name_no_ext)
+
+        if match:
+            year_str: str; q_str: str; ref: str; title: str; author_str: str; source: str
+            year_str, q_str, ref, title, author_str, source = match.groups()
+
+            self.title = title.strip()
+            self.authors = [a.strip() for a in author_str.split("+")]
+            self.source = source.strip()
+            self._base_prefix = f"{year_str}.{q_str}.{ref}"
+            self.is_research_format = True
+
+            # REVERSE CALCULATE: Map the prefix variables back to a real ISO date
+            if ref.startswith("D"):
+                self.full_date = self._calculate_date_from_prefix(year_str, q_str, ref)
+                self.page_number = None
+            else:
+                self.full_date = None
+                self.page_number = ref
+        else:
+            self.title = name_no_ext
+            self.authors = ["Unknown"]
+            self.source = "Unsorted"
+            self._base_prefix = "0000.0.000"
+            self.full_date = None
+            self.page_number = None
+            self.is_research_format = False
+
+    def load_zotero_context(self, item_data: Dict[str, Any]) -> None:
+        """
+        Ingests raw Zotero API metadata and maps it to the internal state,
+        calculating the prefix directly from the true Zotero date properties.
+        """
+        self.full_date = item_data.get("date")
+
+        pages: str = item_data.get("pages", "")
+        self.page_number = pages.split("-")[0].strip() if pages else None
+
+        # FORWARD CALCULATE: Map the ISO date to a structured YYYY.Q.REF string
+        self._base_prefix = self._calculate_prefix_from_date(self.full_date, self.page_number)
+        self.title = item_data.get("title", "")
+        self.source = item_data.get("publisher", "")
+
+        self.authors = []
+        for creator in item_data.get("creators", []):
+            if creator.get("creatorType") == "author" and creator.get("lastName"):
+                self.authors.append(creator["lastName"])
+        if not self.authors:
+            self.authors = ["Unknown"]
+        self.is_research_format = True
+
+    def generate_windows_filename(self) -> str:
+        """Assembles and truncates the filename using ONLY internal state properties."""
+        title_clean: str = self._sanitize(self.title)
+        source_clean: str = self._sanitize(self.source)
+
+        if title_clean.upper() in self.reserved_names:
+            title_clean += "_"
+
+        author_str: str = "+".join(self.authors)
+        if len(self.authors) > 1:
+            test_name: str = f"{self.prefix} {title_clean} - {author_str}, {source_clean}{self.ext}"
+            if len(test_name) > self.limit:
+                author_str = self.authors[0] + " et al."
+
+        name: str = f"{self.prefix} {title_clean} - {author_str}, {source_clean}{self.ext}"
+        if len(name) <= self.limit:
+            return name
+
+        fixed_len: int = len(self.prefix) + 1 + 3 + len(author_str) + 2 + len(source_clean) + len(self.ext)
+        max_title_len: int = self.limit - fixed_len - 3
+
+        if max_title_len > 0:
+            return f"{self.prefix} {title_clean[:max_title_len]}... - {author_str}, {source_clean}{self.ext}"
+
+        return name[:self.limit]
+
+    def get_canonical_key(self) -> str:
+        """Generates a pure alphanumeric matching lookup key directly from the generated name state."""
+        filename: str = self.generate_windows_filename()
+        clean: str = re.sub(r"[^a-zA-Z0-9]", "", filename).lower()
+        return clean[:50]
+
+    # region: PRIVATE INTERNAL CLOCKWORK METHODS
+    def _sanitize(self, text: str) -> str:
+        if not text:
+            return ""
+        txt: str = re.sub(r"<[^>]+>", "", text)
+        txt = "".join(char for char in txt if ord(char) >= 32)
+
+        translation_map: Dict[str, str] = {
+            "\u201c": "'", "\u201d": "'", "\u2018": "'", "\u2019": "'", "\"": "'",
+            "\u2013": "-", "\u2014": "-", "\u2026": "...", "\u00a0": " ",
+            ":": ","
+        }
+        for orig, rep in translation_map.items():
+            txt = txt.replace(orig, rep)
+
+        return re.sub(r"[<>:\"/\\|?*]", "_", txt)
+
+    def _calculate_date_from_prefix(self, year_str: str, q_str: str, ref_str: str) -> Optional[str]:
+        """Reverse Calculation: Parses YYYY, Q, and D## into an ISO YYYY-MM-DD string."""
+        try:
+            year: int = int(year_str)
+            quarter: int = int(q_str)
+            day_offset: int = int(ref_str[1:]) - 1  # Strip the 'D' and drop to a 0-indexed delta
+
+            # Locate the calendar boundaries of the target quarter
+            start_month: int = (quarter - 1) * 3 + 1
+            q_start_date: datetime = datetime(year, start_month, 1)
+
+            actual_date: datetime = q_start_date + timedelta(days=day_offset)
+            return actual_date.strftime("%Y-%m-%d")
+        except (ValueError, IndexError):
+            return None
+
+    def _calculate_prefix_from_date(self, pub_date_str: Optional[str], page_ref: Optional[str]) -> str:
+        """Forward Calculation: Converts an ISO date into a structured chronological prefix."""
+        year: str; quarter: str; ref: str
+        year, quarter, ref = "0000", "0", "000"
+        if pub_date_str:
+            try:
+                dt: datetime = datetime.strptime(pub_date_str[:10], "%Y-%m-%d")
+                year: str = str(dt.year)
+                q_num: int = (dt.month - 1) // 3 + 1
+                quarter: str = str(q_num)
+
+                q_start_date: datetime = datetime(dt.year, (q_num - 1) * 3 + 1, 1)
+                ref: str = "D" + str((dt - q_start_date).days + 1)
+                return f"{year}.{quarter}.{ref}"
+            except ValueError:
+                if len(pub_date_str) >= 4: year = pub_date_str[:4]
+                if page_ref: ref = page_ref
+        elif page_ref:
+            ref = page_ref
+        return f"{year}.{quarter}.{ref}"
+    # endregion
+
+class FreeplaneMap:
+    """Encapsulates the generation of a Freeplane .mm XML file."""
+
+    @staticmethod
+    def get_best_link(zotero_uri: Optional[str], onedrive_url: Optional[str]) -> Optional[str]:
+        """
+        Link Prioritizer: Resolves the optimal URI for the mind map node.
+        Priority 1: Zotero local database URI
+        Priority 2: OneDrive web URL
+        """
+        if zotero_uri:
+            return zotero_uri
+        return onedrive_url
+
+    class MapNode:
+        """Represents a single node (folder or file) within the mind map."""
+        def __init__(self, text: str, link: Optional[str] = None, depth: int = 0):
+            self.text: str = text
+            self.link: Optional[str] = link
+            self.depth: int = depth
+            self.children: List['FreeplaneMap.MapNode'] = []
+
+        def add_child(self, text: str, link: Optional[str] = None) -> 'FreeplaneMap.MapNode':
+            """
+            Instantiates a child node, automatically incrementing its depth attribute 
+            based on its parent's location in the tree.
+            """
+            # Pass the inherited depth + 1 to the new child
+            child: 'FreeplaneMap.MapNode' = FreeplaneMap.MapNode(text, link, depth=self.depth + 1)
+            self.children.append(child)
+            return child
+
+        def render(self) -> str:
+            """Recursively generates the XML string for this node, injecting style attributes."""
+            safe_text: str = self.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+
+            node_xml: str = f'<node TEXT="{safe_text}"'
+            if self.link:
+                safe_link: str = self.link.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
+                node_xml += f' LINK="{safe_link}"'
+
+            node_xml += ">"
+
+            # Inject the standard Freeplane Attribute for the Conditional Styles engine
+            node_xml += f'<attribute NAME="Depth" VALUE="{self.depth}"/>'
+
+            for child in self.children:
+                node_xml += child.render()
+
+            node_xml += "</node>"
+            return node_xml
+
+    def __init__(self, root_text: str):
+        # The core root node acts as the 0-depth anchor
+        self.root_node: 'FreeplaneMap.MapNode' = self.MapNode(root_text, depth=0)
+
+    def save(self, filepath: str) -> None:
+        """Compiles the complete XML document and writes it to disk."""
+        xml_header: str = '<?xml version="1.0" encoding="UTF-8"?>\n<map version="1.9.13">\n'
+        xml_footer: str = '\n</map>'
+
+        full_xml: str = f"{xml_header}{self.root_node.render()}{xml_footer}"
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(full_xml)
+        print(f"Freeplane map successfully generated at: {filepath}")
 
 class TransferSession:
     # region: INITIALIZATION & CONFIGURATION
@@ -74,9 +319,12 @@ class TransferSession:
         self.zotero_session.mount("https://", adapter)
 
         # 3. Instantiate the single long-lived naming engine context
-        self.naming_context = ResearchFileContext()
+        self.naming_context: ResearchFileContext = ResearchFileContext()
 
-        # 4. Mappings
+        # 4. Initialize the Freeplane Map with a root node
+        self.map_engine: FreeplaneMap = FreeplaneMap("My Life and Worldview")
+
+        # 5. Mappings
         self.checkpoint: Dict[str, Any] = self._load_json(CHECKPOINT_FILE)
         self.zotero_map: Dict[str, str] = self._load_json(COLLECTION_MAP_FILE)
 
@@ -359,7 +607,7 @@ class TransferSession:
         for start in range(0, size, chunk_size):
             end = min(start + chunk_size - 1, size - 1)
             chunk_data = data_view[start:end + 1]
-            
+
             headers = {
                 "Content-Length": str(len(chunk_data)),
                 "Content-Range": f"bytes {start}-{end}/{size}"
@@ -536,218 +784,6 @@ class TransferSession:
         return f"zotero://select/library/items/{item_key}"
     # endregion
 
-class ResearchFileContext:
-    def __init__(self, filename_limit: int = 200, extension: str = ".pdf"):
-        self.limit: int = filename_limit
-        self.ext: str = extension
+    # region: FILE/FOLDER PROCESSING LOGIC
 
-        # Unified State Configuration representing the active file being handled
-        self.raw_input: str = ""
-        self.title: str = ""
-        self.authors: List[str] = ["Unknown"]
-        self.source: str = "Unsorted"
-
-        # Protected internal base state
-        self._base_prefix: str = "0000.0.000"
-
-        # Public modifier state
-        self.alpha_suffix: str = ""
-
-        self.full_date: Optional[str] = None
-        self.page_number: Optional[str] = None
-        self.is_research_format: bool = False
-
-        self.reserved_names: Set[str] = {
-            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
-            "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
-            "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
-        }
-
-    @property
-    def prefix(self) -> str:
-        return f"{self._base_prefix}{self.alpha_suffix}"
-
-    def load_file_context(self, filename: str) -> None:
-        """
-        Ingests a raw Google Drive filename, extracts its metadata, 
-        and calculates the true publication date from the filename prefix.
-        """
-        self.raw_input = filename
-        self.alpha_suffix = ""
-        name_no_ext: str = os.path.splitext(filename)[0]
-
-        pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s+(.+?)\s+-\s+([^,]+),\s+(.+)$"
-        match: Optional[re.Match[str]] = re.match(pattern, name_no_ext)
-
-        if match:
-            year_str: str; q_str: str; ref: str; title: str; author_str: str; source: str
-            year_str, q_str, ref, title, author_str, source = match.groups()
-
-            self.title = title.strip()
-            self.authors = [a.strip() for a in author_str.split("+")]
-            self.source = source.strip()
-            self._base_prefix = f"{year_str}.{q_str}.{ref}"
-            self.is_research_format = True
-
-            # REVERSE CALCULATE: Map the prefix variables back to a real ISO date
-            if ref.startswith("D"):
-                self.full_date = self._calculate_date_from_prefix(year_str, q_str, ref)
-                self.page_number = None
-            else:
-                self.full_date = None
-                self.page_number = ref
-        else:
-            self.title = name_no_ext
-            self.authors = ["Unknown"]
-            self.source = "Unsorted"
-            self._base_prefix = "0000.0.000"
-            self.full_date = None
-            self.page_number = None
-            self.is_research_format = False
-
-    def load_zotero_context(self, item_data: Dict[str, Any]) -> None:
-        """
-        Ingests raw Zotero API metadata and maps it to the internal state,
-        calculating the prefix directly from the true Zotero date properties.
-        """
-        self.full_date = item_data.get("date")
-
-        pages: str = item_data.get("pages", "")
-        self.page_number = pages.split("-")[0].strip() if pages else None
-
-        # FORWARD CALCULATE: Map the ISO date to a structured YYYY.Q.REF string
-        self._base_prefix = self._calculate_prefix_from_date(self.full_date, self.page_number)
-        self.title = item_data.get("title", "")
-        self.source = item_data.get("publisher", "")
-
-        self.authors = []
-        for creator in item_data.get("creators", []):
-            if creator.get("creatorType") == "author" and creator.get("lastName"):
-                self.authors.append(creator["lastName"])
-        if not self.authors:
-            self.authors = ["Unknown"]
-        self.is_research_format = True
-
-    def generate_windows_filename(self) -> str:
-        """Assembles and truncates the filename using ONLY internal state properties."""
-        title_clean: str = self._sanitize(self.title)
-        source_clean: str = self._sanitize(self.source)
-
-        if title_clean.upper() in self.reserved_names:
-            title_clean += "_"
-
-        author_str: str = "+".join(self.authors)
-        if len(self.authors) > 1:
-            test_name: str = f"{self.prefix} {title_clean} - {author_str}, {source_clean}{self.ext}"
-            if len(test_name) > self.limit:
-                author_str = self.authors[0] + " et al."
-
-        name: str = f"{self.prefix} {title_clean} - {author_str}, {source_clean}{self.ext}"
-        if len(name) <= self.limit:
-            return name
-
-        fixed_len: int = len(self.prefix) + 1 + 3 + len(author_str) + 2 + len(source_clean) + len(self.ext)
-        max_title_len: int = self.limit - fixed_len - 3
-
-        if max_title_len > 0:
-            return f"{self.prefix} {title_clean[:max_title_len]}... - {author_str}, {source_clean}{self.ext}"
-
-        return name[:self.limit]
-
-    def get_canonical_key(self) -> str:
-        """Generates a pure alphanumeric matching lookup key directly from the generated name state."""
-        filename: str = self.generate_windows_filename()
-        clean: str = re.sub(r"[^a-zA-Z0-9]", "", filename).lower()
-        return clean[:50]
-
-    # region: PRIVATE INTERNAL CLOCKWORK METHODS
-    def _sanitize(self, text: str) -> str:
-        if not text:
-            return ""
-        txt: str = re.sub(r"<[^>]+>", "", text)
-        txt = "".join(char for char in txt if ord(char) >= 32)
-
-        translation_map: Dict[str, str] = {
-            "\u201c": "'", "\u201d": "'", "\u2018": "'", "\u2019": "'", "\"": "'",
-            "\u2013": "-", "\u2014": "-", "\u2026": "...", "\u00a0": " ",
-            ":": ","
-        }
-        for orig, rep in translation_map.items():
-            txt = txt.replace(orig, rep)
-
-        return re.sub(r"[<>:\"/\\|?*]", "_", txt)
-
-    def _calculate_date_from_prefix(self, year_str: str, q_str: str, ref_str: str) -> Optional[str]:
-        """Reverse Calculation: Parses YYYY, Q, and D## into an ISO YYYY-MM-DD string."""
-        try:
-            year: int = int(year_str)
-            quarter: int = int(q_str)
-            day_offset: int = int(ref_str[1:]) - 1  # Strip the 'D' and drop to a 0-indexed delta
-
-            # Locate the calendar boundaries of the target quarter
-            start_month: int = (quarter - 1) * 3 + 1
-            q_start_date: datetime = datetime(year, start_month, 1)
-
-            actual_date: datetime = q_start_date + timedelta(days=day_offset)
-            return actual_date.strftime("%Y-%m-%d")
-        except (ValueError, IndexError):
-            return None
-
-    def _calculate_prefix_from_date(self, pub_date_str: Optional[str], page_ref: Optional[str]) -> str:
-        """Forward Calculation: Converts an ISO date into a structured chronological prefix."""
-        year: str; quarter: str; ref: str
-        year, quarter, ref = "0000", "0", "000"
-        if pub_date_str:
-            try:
-                dt: datetime = datetime.strptime(pub_date_str[:10], "%Y-%m-%d")
-                year: str = str(dt.year)
-                q_num: int = (dt.month - 1) // 3 + 1
-                quarter: str = str(q_num)
-
-                q_start_date: datetime = datetime(dt.year, (q_num - 1) * 3 + 1, 1)
-                ref: str = "D" + str((dt - q_start_date).days + 1)
-                return f"{year}.{quarter}.{ref}"
-            except ValueError:
-                if len(pub_date_str) >= 4: year = pub_date_str[:4]
-                if page_ref: ref = page_ref
-        elif page_ref:
-            ref = page_ref
-        return f"{year}.{quarter}.{ref}"
     # endregion
-
-class FreeplaneMap:
-    def __init__(self, root_text: str = "My Worldview", version: str = "1.9.13"):
-        """Initializes the XML structure with a central root node."""
-        self.root_xml: ET.Element = ET.Element("map", version=version)
-        self.central_node: ET.Element = ET.SubElement(self.root_xml, "node", TEXT=root_text)
-
-    def add_styled_node(self, parent_node: ET.Element, name: str, link: Optional[str], depth: int) -> ET.Element:
-        """
-        Adds a new child node to the mindmap.
-        Implements the attribute-based styling for the semantic zoom engine.
-        """
-        node_attrs: Dict[str, str] = {"TEXT": name}
-        if link and link != "NONE":
-            node_attrs["LINK"] = link
-
-        node: ET.Element = ET.SubElement(parent_node, "node", node_attrs)
-
-        # Always inject the 'Depth' attribute for conditional styling in Freeplane
-        ET.SubElement(node, "attribute", NAME="Depth", VALUE=str(depth))
-        return node
-
-    def get_best_link(self, zotero_uri: Optional[str], onedrive_url: Optional[str]) -> Optional[str]:
-        """
-        Helper that prioritizes Zotero URIs over OneDrive URLs.
-        """
-        if zotero_uri and zotero_uri != "NONE":
-            return zotero_uri
-        if onedrive_url and onedrive_url != "NONE":
-            return onedrive_url
-        return None
-
-    def write(self, filepath: str) -> None:
-        """Serializes the XML tree to disk."""
-        tree = ET.ElementTree(self.root_xml)
-        tree.write(filepath, encoding="utf-8", xml_declaration=True)
-        print(f"Mindmap successfully written to {filepath}")
