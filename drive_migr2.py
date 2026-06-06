@@ -309,6 +309,22 @@ class ZoteroClient:
         response = self.request("POST", "items", json=[payload])
         return response.json()["successful"]["0"]["key"]
 
+    def get_all_items(self) -> List[Dict[str, Any]]:
+        """Pulls the entire library schema using Zotero's pagination."""
+        items: List[Dict[str, Any]] = []
+        limit = 100
+        start = 0
+
+        while True:
+            response = self.request("GET", f"items?limit={limit}&start={start}")
+            batch = response.json()
+            if not batch:
+                break
+            items.extend(batch)
+            start += limit
+
+        return items
+
 class ResearchFileContext:
     def __init__(self, filename_limit: int = 200, extension: str = ".pdf"):
         self.limit: int = filename_limit
@@ -669,33 +685,28 @@ class TransferSession:
     # region: ZOTERO HELPERS
     def build_zotero_index(self) -> Dict[str, str]:
         """
-        Scans the Zotero web library on startup to build a local memory index.
-        Maps the compiled Canonical Key to the persistent Zotero Item Key.
+        Builds a memory map of the Zotero library to prevent duplicate item creation.
+        Maps canonical keys (Title + Date + Author) to Zotero Item IDs.
         """
-        print("Indexing Zotero library for title matching...")
-        index: Dict[str, str] = {}
-        limit: int = 100
-        start: int = 0
+        print("Building local Zotero library index...")
+        self.zotero_index: Dict[str, str] = {}
 
-        while True:
-            endpoint: str = f"items?itemType=document&limit={limit}&start={start}"
-            resp: List[Dict[str, Any]] = self.zotero.request("GET", endpoint).json()
+        # 1. Fetch raw data from the client
+        all_items: List[Dict[str, Any]] = self.zotero.get_all_items()
 
-            if not resp:
-                break
+        # 2. Apply your specific migration logic to build the index
+        for item in all_items:
+            data: Dict[str, Any] = item.get("data", {})
+            if data.get("itemType") == "attachment":
+                continue
 
-            for item in resp:
-                # Ingest raw database values directly into our stateful context
-                self.naming_context.load_zotero_context(item["data"])
+            self.naming_context.load_zotero_context(data)
+            canonical_key: str = self.naming_context.get_canonical_key()
 
-                # Extract the derived canonical key straight from class state
-                norm_key: str = self.naming_context.get_canonical_key()
-                index[norm_key] = item["key"]
+            if canonical_key:
+                self.zotero_index[canonical_key] = item["key"]
 
-            start += limit
-
-        print(f"Indexed {len(index)} Zotero document records successfully.")
-        return index
+        print(f"Index complete. {len(self.zotero_index)} unique research items mapped.")
 
     def get_or_create_zotero_collection(self, name: str, parent_id: Optional[str] = None) -> str:
         """
@@ -715,12 +726,12 @@ class TransferSession:
         self.save_state()
         return new_id
 
-    def get_or_create_research_item(self, g_filename: str, onedrive_url: str, collection_id: str, z_index: Dict[str, str]) -> str:
+    def get_or_create_research_item(self, resolved_filename: str, onedrive_url: str, collection_id: str, z_index: Dict[str, str]) -> str:
         """
         Coordinates the verification, population, and synchronization of Zotero records
         leveraging the internal naming state.
         """
-        self.naming_context.load_file_context(g_filename)
+        self.naming_context.load_file_context(resolved_filename)
         lookup_key: str = self.naming_context.get_canonical_key()
         item_key: Optional[str] = z_index.get(lookup_key)
 
