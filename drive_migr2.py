@@ -83,7 +83,7 @@ class GoogleDriveClient:
         while True:
             response: Dict[str, Any] = self.service.files().list(
                 q=f"'{folder_id}' in parents",
-                fields="nextPageToken, files(id, name, mimeType, shortcutDetails)",
+                fields="nextPageToken, files(id, name, mimeType, shortcutDetails, md5Checksum)",
                 pageToken=page_token
             ).execute()
 
@@ -630,9 +630,7 @@ class TransferSession:
         Computes a deterministic MD5 hexadecimal checksum for an in-memory 
         binary file stream to handle global content-addressable deduplication.
         """
-        hasher = hashlib.md5()
-        hasher.update(data_bytes)
-        return hasher.hexdigest()
+        return hashlib.md5(data_bytes).hexdigest()
 
     def _atomic_json_write(self, filepath: str, data: Dict[str, Any]) -> None:
         """
@@ -699,14 +697,14 @@ class TransferSession:
         self.save_state()
         return new_id
 
-    def get_or_create_research_item(self, resolved_filename: str, onedrive_url: str, collection_id: str, z_index: Dict[str, str]) -> str:
+    def get_or_create_research_item(self, resolved_filename: str, onedrive_url: str, collection_id: str) -> str:
         """
         Coordinates the verification, population, and synchronization of Zotero records
         leveraging the internal naming state.
         """
         self.naming_context.load_file_context(resolved_filename)
         lookup_key: str = self.naming_context.get_canonical_key()
-        item_key: Optional[str] = z_index.get(lookup_key)
+        item_key: Optional[str] = self.zotero_index.get(lookup_key)
 
         if item_key:
             # Update existing item
