@@ -127,7 +127,7 @@ class GoogleDriveClient:
             request: Any = self.service.files().export_media(fileId=file_id, mimeType=export_map[mime_type]["target"])
             ext: str = export_map[mime_type]["ext"]
             if not file_name.lower().endswith(ext):
-                file_name: str = f"{file_name}{ext}"
+                file_name = f"{file_name}{ext}"
         elif mime_type.startswith("application/vnd.google-apps."):
             print(f"Skipping non-exportable Google file: {file_name} ({mime_type})")
             return None
@@ -153,6 +153,100 @@ class GoogleDriveClient:
                         raise
 
         return buffer.getvalue(), file_name
+
+class OneDriveClient:
+    """Handles all authentication and upload operations for the Microsoft Graph API."""
+
+    SCOPES: List[str] = ["Files.ReadWrite.All", "User.Read"]
+
+    def __init__(self, client_id: str, authority: str):
+        """Initializes the Microsoft Authentication Library (MSAL) application."""
+        if not client_id:
+            raise ValueError("Microsoft Client ID is required for MSAL authentication.")
+
+        self.client_id: str = client_id
+        self.authority: str = authority
+        self.token: Optional[str] = None
+        self.app: msal.PublicClientApplication = msal.PublicClientApplication(
+            self.client_id, 
+            authority=self.authority
+        )
+
+    def authenticate(self) -> None:
+        """Authenticates the user and acquires the Graph API access token."""
+        accounts: List[Dict[str, Any]] = self.app.get_accounts() # type: ignore
+        result: Dict[str, Any] = {} # type: ignore
+
+        if accounts:
+            result = self.app.acquire_token_silent(self.SCOPES, account=accounts[0]) # type: ignore
+
+        if not result:
+            # Triggers the interactive browser flow
+            result = self.app.acquire_token_interactive(scopes=self.SCOPES) # type: ignore
+
+        if "access_token" in result:
+            self.token: Optional[str] = result["access_token"]
+        else:
+            raise RuntimeError(f"Could not authenticate Microsoft account. Details: {result}")
+
+    def upload_file(self, filename: str, data: bytes) -> str:
+        """
+        Uploads an in-memory byte stream to OneDrive.
+        Uses a standard PUT for files <=4MB and a chunked resumable session for larger files.
+        """
+        if not self.token:
+            raise RuntimeError("OneDriveClient is not authenticated. Call authenticate() first.")
+
+        size: int = len(data)
+        base_url: str = f"https://graph.microsoft.com/v1.0/me/drive/root:/Documents/My%20Life%20and%20Worldview/{quote(filename)}"
+        auth_headers: Dict[str, str] = {"Authorization": f"Bearer {self.token}"}
+
+        # Small File Upload (<= 4MB)
+        if size <= 4 * 1024 * 1024:
+            headers: Dict[str, str] = {**auth_headers, "Content-Type": "application/octet-stream"}
+            response: requests.Response = requests.put(f"{base_url}:/content", headers=headers, data=data)
+            response.raise_for_status()
+            return response.json().get("webUrl", "")
+
+        # Large File Resumable Upload Session
+        print(f"Large file detected ({size / 1024 / 1024:.2f} MB). Starting chunked session...")
+        session_response: requests.Response = requests.post(f"{base_url}:/createUploadSession", headers=auth_headers)
+        session_response.raise_for_status()
+
+        upload_url: str = session_response.json()["uploadUrl"]
+        chunk_size: int = 3276800  # ~3.2MB per chunk (must be multiple of 320 KiB)
+        last_response: Optional[requests.Response] = None
+        data_view: memoryview = memoryview(data)
+        max_retries: int = 5
+
+        for start in range(0, size, chunk_size):
+            end: int = min(start + chunk_size - 1, size - 1)
+            chunk_data: bytes = data_view[start:end + 1]
+
+            headers = {
+                "Content-Length": str(len(chunk_data)),
+                "Content-Range": f"bytes {start}-{end}/{size}"
+            }
+
+            for attempt in range(max_retries):
+                try:
+                    # Authorization header is deliberately excluded from the PUT to the upload_url per Graph API docs
+                    last_response = requests.put(upload_url, headers=headers, data=chunk_data)
+                    if last_response.status_code in (200, 201, 202):
+                        break
+                    elif last_response.status_code >= 500:
+                        print(f"Server error {last_response.status_code}. Retrying chunk...")
+                    else:
+                        raise RuntimeError(f"Chunk upload failed at {start}-{end}: {last_response.text}")
+                except Exception as e:
+                    print(f"Connection error ({type(e).__name__}). Retrying chunk...")
+
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                else:
+                    raise RuntimeError(f"Failed to upload chunk {start}-{end} after {max_retries} attempts.")
+
+        return last_response.json().get("webUrl", "") if last_response else ""
 
 class ResearchFileContext:
     def __init__(self, filename_limit: int = 200, extension: str = ".pdf"):
@@ -525,124 +619,6 @@ class TransferSession:
         self._auth_microsoft()
     # endregion
 
-    # region: MICROSOFT GRAPH HELPERS
-    def _auth_microsoft(self) -> None:
-        scopes = ["Files.ReadWrite.All", "User.Read"]
-        app = msal.PublicClientApplication(self.ms_client_id, authority=self.ms_authority)
-
-        accounts: List[Dict[str, Any]] = app.get_accounts()  # type: ignore
-        result: Dict[str, Any] = {}  # type: ignore
-
-        if accounts:
-            result: Dict[str, Any] = app.acquire_token_silent(scopes, account=accounts[0])  # type: ignore
-
-        if not result:
-            # Note: This triggers the browser flow
-            result: Dict[str, Any] = app.acquire_token_interactive(scopes=scopes)  # type: ignore[return-value]
-
-        if "access_token" in result:
-            self.ms_token = result["access_token"]
-        else:
-            raise RuntimeError("Could not authenticate Microsoft account.")
-
-    def resolve_windows_namespace(self, filename: str) -> str:
-        """
-        Coordinates global namespace uniqueness. Calculates the necessary alpha suffix
-        and updates the shared ResearchFileContext state if a collision occurs.
-        """
-        # Load the file into the context machine once to initialize its properties
-        self.naming_context.load_file_context(filename)
-
-        # Generate the standard un-suffixed filename
-        candidate_name = self.naming_context.generate_windows_filename()
-
-        # If the standard name is unique, register it and exit immediately
-        if candidate_name not in self.used_names:
-            self.used_names.add(candidate_name)
-            return candidate_name
-
-        # A collision occurred. Loop until a clean alpha suffix slot is uncovered
-        ascii_pointer = 65  # ASCII for 'A'
-
-        while candidate_name in self.used_names:
-            if ascii_pointer > 90:  # Past "Z" -> Handle overflow (AA, AB, etc.)
-                cycle_count = (ascii_pointer - 65) // 26
-                remainder_offset = (ascii_pointer - 65) % 26
-                suffix = chr(65 + cycle_count - 1) + chr(65 + remainder_offset)
-            else:
-                suffix = chr(ascii_pointer)
-
-            # Feed the calculated suffix directly to the context state
-            self.naming_context.alpha_suffix = suffix
-
-            # Re-evaluate the filename string calculated by the context engine
-            candidate_name = self.naming_context.generate_windows_filename()
-            ascii_pointer += 1
-
-        self.used_names.add(candidate_name)
-        print(f"Prefix Collision Resolved: '{filename}' -> '{candidate_name}'")
-        return candidate_name
-
-    def _upload_onedrive_file(self, filename: str, data: bytes) -> str:
-        """
-        Uploads an in-memory byte stream to OneDrive.
-        Uses a standard PUT for files <4MB and a chunked resumable session for larger files.
-        """
-        size = len(data)
-        encoded_name = quote(filename)
-        base_url = f"https://graph.microsoft.com/v1.0/me/drive/root:/Documents/My%20Life%20and%20Worldview/{encoded_name}"
-        auth_headers = {"Authorization": f"Bearer {self.ms_token}"}
-
-        # Small File Upload (<= 4MB)
-        if size <= 4 * 1024 * 1024:
-            url = f"{base_url}:/content"
-            headers = {**auth_headers, "Content-Type": "application/octet-stream"}
-            response = requests.put(url, headers=headers, data=data)
-            response.raise_for_status()
-            return response.json().get("webUrl", "")
-
-        # Large File Resumable Upload Session
-        print(f"Large file detected ({size / 1024 / 1024:.2f} MB). Starting chunked session...")
-        session_url = f"{base_url}:/createUploadSession"
-        session_response = requests.post(session_url, headers=auth_headers)
-        session_response.raise_for_status()
-
-        upload_url = session_response.json()["uploadUrl"]
-        chunk_size = 327680 * 10  # ~3.2MB per chunk (must be multiple of 320 KiB)
-        last_response: Optional[requests.Response] = None
-        data_view = memoryview(data)
-        max_retries = 5
-
-        for start in range(0, size, chunk_size):
-            end = min(start + chunk_size - 1, size - 1)
-            chunk_data = data_view[start:end + 1]
-
-            headers = {
-                "Content-Length": str(len(chunk_data)),
-                "Content-Range": f"bytes {start}-{end}/{size}"
-            }
-
-            for attempt in range(max_retries):
-                try:
-                    # Authorization header is deliberately excluded from the PUT to the upload_url
-                    last_response = requests.put(upload_url, headers=headers, data=chunk_data)
-                    if last_response.status_code in (200, 201, 202):
-                        break
-                    elif last_response.status_code >= 500:
-                        print(f"Server error {last_response.status_code}. Retrying chunk...")
-                    else:
-                        raise RuntimeError(f"Chunk upload failed at {start}-{end}: {last_response.text}")
-                except Exception as e:
-                    print(f"Connection error ({type(e).__name__}). Retrying chunk...")
-
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                else:
-                    raise RuntimeError(f"Failed to upload chunk {start}-{end} after {max_retries} attempts.")
-
-        return last_response.json().get("webUrl", "") if last_response else ""
-    # endregion
-
     # region: ZOTERO HELPERS
     def zotero_request(self, method: str, endpoint: str, **kwargs: Any) -> requests.Response:
         """
@@ -794,5 +770,41 @@ class TransferSession:
     # endregion
 
     # region: FILE/FOLDER PROCESSING LOGIC
+    def resolve_windows_namespace(self, filename: str) -> str:
+        """
+        Coordinates global namespace uniqueness. Calculates the necessary alpha suffix
+        and updates the shared ResearchFileContext state if a collision occurs.
+        """
+        # Load the file into the context machine once to initialize its properties
+        self.naming_context.load_file_context(filename)
 
+        # Generate the standard un-suffixed filename
+        candidate_name = self.naming_context.generate_windows_filename()
+
+        # If the standard name is unique, register it and exit immediately
+        if candidate_name not in self.used_names:
+            self.used_names.add(candidate_name)
+            return candidate_name
+
+        # A collision occurred. Loop until a clean alpha suffix slot is uncovered
+        ascii_pointer = 65  # ASCII for 'A'
+
+        while candidate_name in self.used_names:
+            if ascii_pointer > 90:  # Past "Z" -> Handle overflow (AA, AB, etc.)
+                cycle_count = (ascii_pointer - 65) // 26
+                remainder_offset = (ascii_pointer - 65) % 26
+                suffix = chr(65 + cycle_count - 1) + chr(65 + remainder_offset)
+            else:
+                suffix = chr(ascii_pointer)
+
+            # Feed the calculated suffix directly to the context state
+            self.naming_context.alpha_suffix = suffix
+
+            # Re-evaluate the filename string calculated by the context engine
+            candidate_name = self.naming_context.generate_windows_filename()
+            ascii_pointer += 1
+
+        self.used_names.add(candidate_name)
+        print(f"Prefix Collision Resolved: '{filename}' -> '{candidate_name}'")
+        return candidate_name
     # endregion
