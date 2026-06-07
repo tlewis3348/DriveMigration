@@ -1,22 +1,22 @@
-import os
+import hashlib
 import io
 import json
-import msal # type: ignore
+import os
 import re
-import time
-import hashlib
-import requests
 import tempfile
-
+import time
 from datetime import datetime, timedelta
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow # type: ignore
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build # type: ignore
-from googleapiclient.http import MediaIoBaseDownload # type: ignore
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote
+
+import msal  # type: ignore
+import requests
 from dotenv import load_dotenv
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
+from googleapiclient.discovery import build  # type: ignore
+from googleapiclient.http import MediaIoBaseDownload  # type: ignore
 
 # region: CONFIG
 OUTPUT_MM: str = "index.mm"
@@ -24,8 +24,7 @@ CHECKPOINT_FILE: str = "checkpoint.json"
 COLLECTION_MAP_FILE: str = "zotero_collections.json"
 CONTENT_MAP_FILE: str = "content_map.json"
 
-# Load environment variables
-load_dotenv()
+load_dotenv() # Load environment variables
 # endregion
 
 class GoogleDriveClient:
@@ -358,7 +357,7 @@ class ResearchFileContext:
     def prefix(self) -> str:
         return f"{self._base_prefix}{self.alpha_suffix}"
 
-    def load_file_context(self, filename: str) -> None:
+    def file2context(self, filename: str) -> None:
         """
         Ingests a raw Google Drive filename, extracts its metadata, 
         and calculates the true publication date from the filename prefix.
@@ -382,7 +381,7 @@ class ResearchFileContext:
 
             # REVERSE CALCULATE: Map the prefix variables back to a real ISO date
             if ref.startswith("D"):
-                self.full_date = self._calculate_date_from_prefix(year_str, q_str, ref)
+                self.full_date = self._date2pre(year_str, q_str, ref)
                 self.page_number = None
             else:
                 self.full_date = None
@@ -396,7 +395,7 @@ class ResearchFileContext:
             self.page_number = None
             self.is_research_format = False
 
-    def load_zotero_context(self, item_data: Dict[str, Any]) -> None:
+    def zotero2context(self, item_data: Dict[str, Any]) -> None:
         """
         Ingests raw Zotero API metadata and maps it to the internal state,
         calculating the prefix directly from the true Zotero date properties.
@@ -407,7 +406,7 @@ class ResearchFileContext:
         self.page_number = pages.split("-")[0].strip() if pages else None
 
         # FORWARD CALCULATE: Map the ISO date to a structured YYYY.Q.REF string
-        self._base_prefix = self._calculate_prefix_from_date(self.full_date, self.page_number)
+        self._base_prefix = self._pre2date(self.full_date, self.page_number)
         self.title = item_data.get("title", "")
         self.source = item_data.get("publisher", "")
 
@@ -419,7 +418,7 @@ class ResearchFileContext:
             self.authors = ["Unknown"]
         self.is_research_format = True
 
-    def generate_windows_filename(self) -> str:
+    def gen_name(self) -> str:
         """Assembles and truncates the filename using ONLY internal state properties."""
         title_clean: str = self._sanitize(self.title)
         source_clean: str = self._sanitize(self.source)
@@ -447,7 +446,7 @@ class ResearchFileContext:
 
     def get_canonical_key(self) -> str:
         """Generates a pure alphanumeric matching lookup key directly from the generated name state."""
-        filename: str = self.generate_windows_filename()
+        filename: str = self.gen_name()
         clean: str = re.sub(r"[^a-zA-Z0-9]", "", filename).lower()
         return clean[:50]
 
@@ -468,7 +467,7 @@ class ResearchFileContext:
 
         return re.sub(r"[<>:\"/\\|?*]", "_", txt)
 
-    def _calculate_date_from_prefix(self, year_str: str, q_str: str, ref_str: str) -> Optional[str]:
+    def _date2pre(self, year_str: str, q_str: str, ref_str: str) -> Optional[str]:
         """Reverse Calculation: Parses YYYY, Q, and D## into an ISO YYYY-MM-DD string."""
         try:
             year: int = int(year_str)
@@ -484,7 +483,7 @@ class ResearchFileContext:
         except (ValueError, IndexError):
             return None
 
-    def _calculate_prefix_from_date(self, pub_date_str: Optional[str], page_ref: Optional[str]) -> str:
+    def _pre2date(self, pub_date_str: Optional[str], page_ref: Optional[str]) -> str:
         """Forward Calculation: Converts an ISO date into a structured chronological prefix."""
         year: str; quarter: str; ref: str
         year, quarter, ref = "0000", "0", "000"
@@ -608,7 +607,7 @@ class TransferSession:
         self.checkpoint: Dict[str, Any] = self._load_json(CHECKPOINT_FILE)
         self.zotero_map: Dict[str, str] = self._load_json(COLLECTION_MAP_FILE)
         self.content_map: Dict[str, str] = self._load_json(CONTENT_MAP_FILE)
-        self.used_names: Set[str] = self._initialize_used_names()
+        self.used_names: Set[str] = self._init_used_names()
         self.zotero_index: Dict[str, str] = {}
 
     def _load_json(self, filepath: str) -> Dict[str, Any]:
@@ -617,7 +616,7 @@ class TransferSession:
                 return json.load(f)
         return {}
 
-    def _initialize_used_names(self) -> Set[str]:
+    def _init_used_names(self) -> Set[str]:
         """Populates the runtime namespace safety set from active checkpoint history."""
         names: Set[str] = set()
         for entry in self.checkpoint.values():
@@ -625,7 +624,7 @@ class TransferSession:
                 names.add(entry["name"])
         return names
 
-    def calculate_stream_hash(self, data_bytes: bytes) -> str:
+    def calc_stream_hash(self, data_bytes: bytes) -> str:
         """
         Computes a deterministic MD5 hexadecimal checksum for an in-memory 
         binary file stream to handle global content-addressable deduplication.
@@ -655,7 +654,7 @@ class TransferSession:
     # endregion
 
     # region: ZOTERO HELPERS
-    def build_zotero_index(self) -> None:
+    def build_index(self) -> None:
         """
         Builds a memory map of the Zotero library to prevent duplicate item creation.
         Maps canonical keys (Title + Date + Author) to Zotero Item IDs.
@@ -671,7 +670,7 @@ class TransferSession:
             if data.get("itemType") == "attachment":
                 continue
 
-            self.naming_context.load_zotero_context(data)
+            self.naming_context.zotero2context(data)
             canonical_key: str = self.naming_context.get_canonical_key()
 
             if canonical_key:
@@ -679,7 +678,7 @@ class TransferSession:
 
         print(f"Index complete. {len(self.zotero_index)} unique research items mapped.")
 
-    def get_or_create_zotero_collection(self, name: str, parent_id: Optional[str] = None) -> str:
+    def sync_collection(self, name: str, parent_id: Optional[str] = None) -> str:
         """
         Resolves a folder name to a Zotero Collection ID. 
         Creates the collection if it does not exist and persists the mapping.
@@ -697,12 +696,12 @@ class TransferSession:
         self.save_state()
         return new_id
 
-    def get_or_create_research_item(self, resolved_filename: str, onedrive_url: str, collection_id: str) -> str:
+    def sync_item(self, resolved_filename: str, onedrive_url: str, collection_id: str) -> str:
         """
         Coordinates the verification, population, and synchronization of Zotero records
         leveraging the internal naming state.
         """
-        self.naming_context.load_file_context(resolved_filename)
+        self.naming_context.file2context(resolved_filename)
         lookup_key: str = self.naming_context.get_canonical_key()
         item_key: Optional[str] = self.zotero_index.get(lookup_key)
 
@@ -759,16 +758,16 @@ class TransferSession:
     # endregion
 
     # region: FILE/FOLDER PROCESSING LOGIC
-    def resolve_windows_namespace(self, filename: str) -> str:
+    def unique_name(self, filename: str) -> str:
         """
         Coordinates global namespace uniqueness. Calculates the necessary alpha suffix
         and updates the shared ResearchFileContext state if a collision occurs.
         """
         # Load the file into the context machine once to initialize its properties
-        self.naming_context.load_file_context(filename)
+        self.naming_context.file2context(filename)
 
         # Generate the standard un-suffixed filename
-        candidate_name = self.naming_context.generate_windows_filename()
+        candidate_name = self.naming_context.gen_name()
 
         # If the standard name is unique, register it and exit immediately
         if candidate_name not in self.used_names:
@@ -790,7 +789,7 @@ class TransferSession:
             self.naming_context.alpha_suffix = suffix
 
             # Re-evaluate the filename string calculated by the context engine
-            candidate_name = self.naming_context.generate_windows_filename()
+            candidate_name = self.naming_context.gen_name()
             ascii_pointer += 1
 
         self.used_names.add(candidate_name)
