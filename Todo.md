@@ -54,17 +54,15 @@ This is the heart of the script. It utilizes the API Service Layer to execute ph
     * **Checkpoint Integrity**: Append the success record to `self.checkpoint` and call `self.save_state()` *only at the very end* to prevent "half-migrated" states.
 
 ## 7. Final Assembly: The Main Flow
-* [ ] **Execution Block**: Create the standard `if __name__ == "__main__":` block at the bottom of the script.
+* [X] **Execution Block**: Create the standard `if __name__ == "__main__":` block at the bottom of the script.
     * Initialize the `TransferSession`.
     * Build the local Zotero memory map (`session.build_index()`).
     * Define the Google Drive root folder ID and call `session.process_folder()`.
     * Save the final Freeplane map XML to disk when the traversal completes.
-
-## 8. Final Assembly: The Main Flow
 * [ ] Implement a "Dry Run" flag in your config. This allows you to test the hierarchy generation in Freeplane without actually uploading files or calling the Zotero API.
 * [ ] Setup the `root_map` with the correct Freeplane XML version and a single central "Worldview" node.
 
-## 9. Post-Migration: Freeplane Setup
+## 8. Post-Migration: Freeplane Setup
 * [ ] **Define Conditional Styles**: Once the script runs, open Freeplane and create rules like: *"If Attribute 'Depth' > 3, then set Font Size = 8pt and Opacity = 40%"*. This completes your vision for the "Semantic Zoom."
 
 # Future Improvements

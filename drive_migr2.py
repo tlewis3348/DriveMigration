@@ -862,7 +862,15 @@ class TransferSession:
                     collection_id=current_collection_id
                 )
 
-    def process_file(self, g_file_id: str, g_filename: str, mime_type: str, md5_checksum: Optional[str], parent_node: 'FreeplaneMap.MapNode', collection_id: str) -> None:
+    def process_file(
+                self,
+                g_file_id: str,
+                g_filename: str,
+                mime_type: str,
+                md5_checksum: Optional[str],
+                parent_node: 'FreeplaneMap.MapNode',
+                collection_id: str
+            ) -> None:
         """
         The atomic data transport loop. Manages downloading, deduplication, 
         namespace resolution, OneDrive uploading, Zotero integration, and Freeplane mapping.
@@ -951,3 +959,42 @@ class TransferSession:
         self.save_state()
         print(f"  -> Success: '{resolved_name}' migration complete.")
     # endregion
+
+if __name__ == "__main__":
+    print("Initializing Drive Migration Protocol...")
+
+    try:
+        # 1. Initialize the Orchestrator (Loads environment variables and state)
+        print("\n--- Step 1: Initialization ---")
+        session = TransferSession()
+
+        # 2. Build Local Memory Maps
+        print("\n--- Step 2: Memory Indexing ---")
+        session.build_index()
+
+        # 3. Define the Target
+        print("\n--- Step 3: Execution ---")
+        # TODO: Replace this string with the actual ID of your root Google Drive folder
+        ROOT_GDRIVE_FOLDER_ID = os.environ.get("ROOT_FOLDER_ID", "")
+
+        if ROOT_GDRIVE_FOLDER_ID == "":
+            print("WARNING: Please set your ROOT_FOLDER_ID in the .env file.")
+            exit(1)
+
+        # 4. Ignite the Traversal Engine
+        print("\n--- Step 4: Traversal ---")
+        session.process_folder(
+            g_folder_id=ROOT_GDRIVE_FOLDER_ID, 
+            parent_node=session.map_engine.root_node
+        )
+
+        # 5. Finalize the Visual Layer
+        print("\n--- Step 5: Finalization ---")
+        output_map_path = "My_Life_and_Worldview.mm"
+        session.map_engine.save(output_map_path)
+
+        print("\nMigration Protocol Complete!")
+
+    except Exception as e:
+        print(f"\nCRITICAL FAILURE: {type(e).__name__} - {e}")
+        # The state is safely saved during process_file, so it is safe to exit here.
