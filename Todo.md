@@ -41,18 +41,30 @@ Decouple API-specific network logic from the main `TransferSession` state manage
 * [X] **Session Integration**: Update `TransferSession.__init__` to instantiate these three clients, passing them the necessary environment variables/credentials, so the session acts purely as the central orchestrator.
 
 ## 6. The Engine: Recursive Traversal
-This is the heart of the script.
-* [ ] **Decoupled Folder/File Logic**:
-    * The `traverse()` function should only handle the recursion and folder creation.
-    * Move the "File Processing" (download, upload, zotero, xml) into a separate function called `process_file()`.
-* [ ] **Global Deduplication**: Before uploading any file, check the `content_map` (hashed IDs). If a match is found, create a "Shortcut Node" in Freeplane that points to the original Zotero URI.
-* [ ] **Checkpoint Integrity**: Ensure the checkpoint is updated *only after* both the OneDrive upload and Zotero documentation are successful. This prevents "half-migrated" entries.
+This is the heart of the script. It utilizes the API Service Layer to execute physical actions and the orchestrator to track state.
+* [ ] **The Traversal Controller (`process_folder`)**: Create a recursive method that acts purely as a traffic director.
+    * Query the Google Drive folder name and resolve its Zotero collection via `self.sync_collection()`.
+    * Build the visual folder node in Freeplane (`parent_node.add_child()`).
+    * Fetch children using `self.gdrive.get_children()` and route sub-folders back into `process_folder()`, while routing standard files to `process_file()`. (Ensure non-exportable Google formats like Forms/Sites are skipped).
+* [ ] **The Atomic Data Transport (`process_file`)**: Create a discrete file processing method to handle download, upload, and metadata syncing.
+    * **Checkpoint Defense**: Immediately skip processing and restore the Freeplane node from cache if the file ID already exists in `self.checkpoint`.
+    * **Smart Deduplication**: Check the native `md5Checksum` from the Google Drive payload against `self.content_map` *before* downloading. If it is a Workspace file (no native hash), download it first, then use `self.calc_stream_hash()`.
+    * **Namespace Integrity**: Call `self.unique_name()` to calculate the exact Windows-safe string, guaranteeing no collisions via `self.used_names`.
+    * **Physical & Relational Sync**: Push the bytes to `self.onedrive.upload_file()` (if not bypassed by deduplication) and generate the Zotero metadata via `self.sync_item()`.
+    * **Checkpoint Integrity**: Append the success record to `self.checkpoint` and call `self.save_state()` *only at the very end* to prevent "half-migrated" states.
 
 ## 7. Final Assembly: The Main Flow
+* [ ] **Execution Block**: Create the standard `if __name__ == "__main__":` block at the bottom of the script.
+    * Initialize the `TransferSession`.
+    * Build the local Zotero memory map (`session.build_index()`).
+    * Define the Google Drive root folder ID and call `session.process_folder()`.
+    * Save the final Freeplane map XML to disk when the traversal completes.
+
+## 8. Final Assembly: The Main Flow
 * [ ] Implement a "Dry Run" flag in your config. This allows you to test the hierarchy generation in Freeplane without actually uploading files or calling the Zotero API.
 * [ ] Setup the `root_map` with the correct Freeplane XML version and a single central "Worldview" node.
 
-## 8. Post-Migration: Freeplane Setup
+## 9. Post-Migration: Freeplane Setup
 * [ ] **Define Conditional Styles**: Once the script runs, open Freeplane and create rules like: *"If Attribute 'Depth' > 3, then set Font Size = 8pt and Opacity = 40%"*. This completes your vision for the "Semantic Zoom."
 
 # Future Improvements
