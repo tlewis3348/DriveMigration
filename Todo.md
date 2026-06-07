@@ -42,11 +42,11 @@ Decouple API-specific network logic from the main `TransferSession` state manage
 
 ## 6. The Engine: Recursive Traversal
 This is the heart of the script. It utilizes the API Service Layer to execute physical actions and the orchestrator to track state.
-* [ ] **The Traversal Controller (`process_folder`)**: Create a recursive method that acts purely as a traffic director.
+* [X] **The Traversal Controller (`process_folder`)**: Create a recursive method that acts purely as a traffic director.
     * Query the Google Drive folder name and resolve its Zotero collection via `self.sync_collection()`.
     * Build the visual folder node in Freeplane (`parent_node.add_child()`).
     * Fetch children using `self.gdrive.get_children()` and route sub-folders back into `process_folder()`, while routing standard files to `process_file()`. (Ensure non-exportable Google formats like Forms/Sites are skipped).
-* [ ] **The Atomic Data Transport (`process_file`)**: Create a discrete file processing method to handle download, upload, and metadata syncing.
+* [X] **The Atomic Data Transport (`process_file`)**: Create a discrete file processing method to handle download, upload, and metadata syncing.
     * **Checkpoint Defense**: Immediately skip processing and restore the Freeplane node from cache if the file ID already exists in `self.checkpoint`.
     * **Smart Deduplication**: Check the native `md5Checksum` from the Google Drive payload against `self.content_map` *before* downloading. If it is a Workspace file (no native hash), download it first, then use `self.calc_stream_hash()`.
     * **Namespace Integrity**: Call `self.unique_name()` to calculate the exact Windows-safe string, guaranteeing no collisions via `self.used_names`.

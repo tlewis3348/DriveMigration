@@ -757,7 +757,7 @@ class TransferSession:
         return f"zotero://select/library/items/{item_key}"
     # endregion
 
-    # region: FILE/FOLDER PROCESSING LOGIC
+    # region: PREPROCESSING LOGIC
     def unique_name(self, filename: str) -> str:
         """
         Coordinates global namespace uniqueness. Calculates the necessary alpha suffix
@@ -808,4 +808,146 @@ class TransferSession:
         # Save Zotero Structural Map
         with open(COLLECTION_MAP_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.zotero_map, f, indent=4)    # endregion
+    # endregion
+
+    # region: TRANSFER LOGIC
+    def process_folder(self, g_folder_id: str, parent_node: 'FreeplaneMap.MapNode', parent_zotero_id: Optional[str] = None) -> None:
+        """
+        Recursively walks the Google Drive directory tree.
+        Mirrors the folder structure into Zotero Collections, builds the Freeplane map hierarchy,
+        and routes individual files to the atomic processor.
+        """
+        # 1. Fetch Folder Metadata
+        folder_name: str = self.gdrive.get_folder_name(g_folder_id)
+        print(f"Directory Dive: Entering '{folder_name}'")
+
+        # 2. Structural Mapping: Resolve or create the Zotero Collection
+        current_collection_id: str = self.sync_collection(folder_name, parent_zotero_id)
+
+        # 3. Visual Mapping: Create the Freeplane Node for this folder
+        folder_node = parent_node.add_child(folder_name)
+
+        # 4. Fetch all children (files and sub-folders) within this directory
+        children: List[Dict[str, Any]] = self.gdrive.get_children(g_folder_id)
+
+        for item in children:
+            item_id: str = item['id']
+            item_name: str = item['name']
+            mime_type: str = item['mimeType']
+            md5_checksum: Optional[str] = item.get('md5Checksum')
+
+            if mime_type == 'application/vnd.google-apps.folder':
+                # Recursive dive into sub-folders
+                self.process_folder(item_id, folder_node, current_collection_id)
+
+            elif mime_type.startswith('application/vnd.google-apps.') and mime_type not in [
+                "application/vnd.google-apps.document", 
+                "application/vnd.google-apps.spreadsheet", 
+                "application/vnd.google-apps.presentation",
+                "application/vnd.google-apps.drawing"
+            ]:
+                # Skip non-exportable Google formats (Forms, Sites, Maps, etc.)
+                print(f"Skipping non-exportable Google format: '{item_name}'")
+                continue
+
+            else:
+                # Route standard files and exportable Google documents to the discrete file processor
+                # Passing md5_checksum directly to enable the smart deduplication optimization
+                self.process_file(
+                    g_file_id=item_id, 
+                    g_filename=item_name, 
+                    mime_type=mime_type, 
+                    md5_checksum=md5_checksum,
+                    parent_node=folder_node, 
+                    collection_id=current_collection_id
+                )
+
+    def process_file(self, g_file_id: str, g_filename: str, mime_type: str, md5_checksum: Optional[str], parent_node: 'FreeplaneMap.MapNode', collection_id: str) -> None:
+        """
+        The atomic data transport loop. Manages downloading, deduplication, 
+        namespace resolution, OneDrive uploading, Zotero integration, and Freeplane mapping.
+        """
+        # 1. Checkpoint Defense
+        if g_file_id in self.checkpoint:
+            print(f"Checkpoint Skip: '{g_filename}' already migrated.")
+            cached_data = self.checkpoint[g_file_id]
+
+            # Rapidly restore the Freeplane node from the cached history
+            best_link = FreeplaneMap.get_best_link(cached_data.get("zotero_uri"), cached_data.get("onedrive_url"))
+            parent_node.add_child(cached_data["resolved_name"], link=best_link)
+            return
+
+        print(f"Processing File: '{g_filename}'")
+
+        onedrive_url: str = ""
+        file_bytes: Optional[bytes] = None
+        real_filename: str = g_filename
+        is_duplicate: bool = False
+
+        # 2. Smart Deduplication (Pre-Download Check)
+        if md5_checksum and md5_checksum in self.content_map:
+            print(f"  -> Smart Deduplication: Exact hash match found globally before download.")
+            onedrive_url = self.content_map[md5_checksum]
+            is_duplicate = True
+
+            # We still need to parse the naming rules for Zotero and the Map
+            self.naming_context.file2context(real_filename)
+            resolved_name = self.unique_name(real_filename)
+        else:
+            # 3. Data Ingestion
+            download_result = self.gdrive.download_file(g_file_id, mime_type, g_filename)
+            if not download_result:
+                return  # Helper method logs the specific skip/failure reason
+
+            file_bytes, real_filename = download_result
+
+            # Namespace Integrity
+            self.naming_context.file2context(real_filename)
+            resolved_name = self.unique_name(real_filename)
+
+            # Secondary Deduplication Check for Workspace files (no native md5)
+            if not md5_checksum:
+                md5_checksum = self.calc_stream_hash(file_bytes)
+                if md5_checksum in self.content_map:
+                    print(f"  -> Post-Download Deduplication: Exact binary match found.")
+                    onedrive_url = self.content_map[md5_checksum]
+                    is_duplicate = True
+
+            # 4. Physical Sync: Upload to Microsoft OneDrive
+            if not is_duplicate:
+                print(f"  -> Uploading to OneDrive as: '{resolved_name}'")
+                # Suppress the Pylance type warning since we know file_bytes is not None here
+                onedrive_url = self.onedrive.upload_file(resolved_name, file_bytes) # type: ignore
+
+                if not onedrive_url:
+                    print(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
+                    return
+
+                # Log the newly minted hash to the global content map
+                self.content_map[md5_checksum] = onedrive_url
+
+        # 5. Relational Sync: Zotero Database
+        print(f"  -> Synchronizing Zotero metadata...")
+        zotero_uri = self.sync_item(
+            resolved_filename=resolved_name,
+            onedrive_url=onedrive_url,
+            collection_id=collection_id
+        )
+
+        # 6. Visual Hierarchy Sync: Freeplane XML
+        best_link = FreeplaneMap.get_best_link(zotero_uri, onedrive_url)
+        parent_node.add_child(resolved_name, link=best_link)
+
+        # 7. Checkpoint Integrity: Record Success and Persist State
+        self.checkpoint[g_file_id] = {
+            "original_name": real_filename,
+            "resolved_name": resolved_name,
+            "onedrive_url": onedrive_url,
+            "zotero_uri": zotero_uri,
+            "timestamp": datetime.now().isoformat()
+        }
+
+        # Saves to disk ONLY if no exceptions were thrown during APIs
+        self.save_state()
+        print(f"  -> Success: '{resolved_name}' migration complete.")
     # endregion
