@@ -64,7 +64,7 @@ This is the heart of the script. It utilizes the API Service Layer to execute ph
 ## 8. Additional Features
 * [X] **Ephemeral Deduplication Memory (`content_map` Amnesia)**: Add self.`content_map_file = "content_map.json"` to your `__init__`. Load it dynamically in `_load_state()` and write it to disk in `save_state()`, exactly as you did with `checkpoint.json`. This ensures that your deduplication logic persists across runs, preventing re-uploads of the same file if you need to restart the script.
 * [X] **Handle Google Drive Shortcuts**: Implement logic to detect and resolve Google Drive shortcuts during traversal. This may involve checking the `shortcutDetails` field in the Drive API response and deciding whether to follow the shortcut or treat it as a regular file/folder. Make use of the fact that items in Zotero can be included in multiple collections to handle cases where the same Google Drive file is linked from different folders.
-* [ ] **Microsoft Graph Token Expiration**: Implement a dynamic token refresh mechanism in `OneDriveClient` to handle long-running migrations that may exceed the token's lifespan.
+* [X] **Microsoft Graph Token Expiration**: Implement a dynamic token refresh mechanism in `OneDriveClient` to handle long-running migrations that may exceed the token's lifespan.
 * [ ] **Enhanced Logging**: Integrate Python's `logging` module to provide more granular control over log levels (INFO, DEBUG, ERROR) and output formats. This will help you track the migration process more effectively, especially when dealing with large batches of files.
 
 ## 9. Post-Migration: Freeplane Setup

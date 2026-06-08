@@ -163,7 +163,6 @@ class OneDriveClient:
 
         self.client_id: str = client_id
         self.authority: str = authority
-        self.token: Optional[str] = None
         self.app: msal.PublicClientApplication = msal.PublicClientApplication(
             self.client_id, 
             authority=self.authority
@@ -172,7 +171,10 @@ class OneDriveClient:
         self.service: Any = self.authenticate()
 
     def authenticate(self) -> None:
-        """Authenticates the user and acquires the Graph API access token."""
+        """
+        Authenticates the user and primes the MSAL cache.
+        Does not store the token statically, forcing dynamic retrieval.
+        """
         accounts: List[Dict[str, Any]] = self.app.get_accounts() # type: ignore
         result: Dict[str, Any] = {} # type: ignore
 
@@ -183,22 +185,36 @@ class OneDriveClient:
             # Triggers the interactive browser flow
             result = self.app.acquire_token_interactive(scopes=self.SCOPES) # type: ignore
 
-        if "access_token" in result:
-            self.token: Optional[str] = result["access_token"]
-        else:
+        if "access_token" not in result:
             raise RuntimeError(f"Could not authenticate Microsoft account. Details: {result}")
+
+    def get_token(self) -> str:
+        """
+        Dynamically fetches a valid access token from the MSAL cache.
+        Silently negotiates a token refresh via Microsoft Graph if the current one is expired.
+        """
+        accounts: List[Dict[str, Any]] = self.app.get_accounts() # type: ignore
+        if not accounts:
+            raise RuntimeError("No Microsoft accounts found in cache. Call authenticate() first.")
+
+        result = self.app.acquire_token_silent(self.SCOPES, account=accounts[0]) # type: ignore
+
+        if result and "access_token" in result:
+            return result["access_token"] # type: ignore
+
+        raise RuntimeError("Failed to silently acquire token. The session may have fatally expired.")
 
     def upload_file(self, filename: str, data: bytes) -> str:
         """
         Uploads an in-memory byte stream to OneDrive.
         Uses a standard PUT for files <=4MB and a chunked resumable session for larger files.
         """
-        if not self.token:
-            raise RuntimeError("OneDriveClient is not authenticated. Call authenticate() first.")
+        # Fetch a fresh token for this specific upload
+        current_token: str = self.get_token()
 
         size: int = len(data)
         base_url: str = f"https://graph.microsoft.com/v1.0/me/drive/root:/Documents/My%20Life%20and%20Worldview/{quote(filename)}"
-        auth_headers: Dict[str, str] = {"Authorization": f"Bearer {self.token}"}
+        auth_headers: Dict[str, str] = {"Authorization": f"Bearer {current_token}"}
 
         # Small File Upload (<= 4MB)
         if size <= 4 * 1024 * 1024:
