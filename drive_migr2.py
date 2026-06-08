@@ -822,6 +822,10 @@ class TransferSession:
         # Save Zotero Structural Map
         with open(COLLECTION_MAP_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.zotero_map, f, indent=4)
+
+        # Save Global Content Hash Map
+        with open(CONTENT_MAP_FILE, 'w', encoding='utf-8') as f:
+            json.dump(self.content_map, f, indent=4)
     # endregion
 
     # region: TRANSFER LOGIC
