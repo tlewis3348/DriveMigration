@@ -77,10 +77,6 @@ The following critical evaluation identifies opportunities to enhance your scrip
 
 ## 2. Functional Enhancements for Zotero and OneDrive
 
-* [X] **Atomic Zotero Operations**:
-    Your `create_or_update_zotero_entry` still performs multiple sequential requests (Search -> Get Children -> Delete -> Post). To make the flow smoother, you can use Zotero’s **Write Actions** or batch processing to reduce the risk of a partial update if your connection drops mid-process.
-* [X] **Path-Aware Deduping**:
-    Your `content_map` currently dedupes based solely on the `underlyingId`. For a "Relationist" worldview, you might want to allow the same content to appear in different branches if it serves a different logical purpose. Adding a flag to toggle between "Global Deduping" and "Branch-Specific Deduping" would improve functionality.
 * [X] **Zotero Metadata Mapping**:
     Your current regex pattern in `safe_name` is sophisticated, but it isn't being used in `create_or_update_zotero_entry` to populate Zotero fields like `date`, `creators`, or `extra`. Passing the parsed metadata dict into the Zotero function would ensure your documented items are as rich as your filenames.
 

@@ -692,7 +692,7 @@ class TransferSession:
 
         if self.dry_run:
             print(f"  -> [DRY RUN] Simulating Zotero Collection: '{name}'")
-            new_id = f"DRY_RUN_COL_{hash(path_key)}"
+            new_id = f"DRY_RUN_COL_{hashlib.md5(path_key.encode('utf-8')).hexdigest()[:8]}"
         else:
             # Delegate the actual API creation to the client
             new_id = self.zotero.create_collection(name, parent_id)
@@ -712,7 +712,7 @@ class TransferSession:
         if self.dry_run:
             print(f"  -> [DRY RUN] Simulating Zotero Item Sync for: '{self.naming_context.title}'")
             # Return a valid Freeplane URI format pointing to a mock item
-            return f"zotero://select/library/items/DRY_RUN_{hash(resolved_filename)}"
+            return f"zotero://select/library/items/DRY_RUN_{hashlib.md5(resolved_filename.encode('utf-8')).hexdigest()[:8]}"
 
         lookup_key: str = self.naming_context.get_canonical_key()
         item_key: Optional[str] = self.zotero_index.get(lookup_key)
@@ -761,8 +761,7 @@ class TransferSession:
             "linkMode": "linked_url",
             "parentItem": item_key,
             "title": "View in OneDrive",
-            "url": onedrive_url,
-            "collections": [collection_id]
+            "url": onedrive_url
         }
         self.zotero.create_item(attachment_payload)
 
