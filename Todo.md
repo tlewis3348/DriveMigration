@@ -59,8 +59,7 @@ This is the heart of the script. It utilizes the API Service Layer to execute ph
     * Build the local Zotero memory map (`session.build_index()`).
     * Define the Google Drive root folder ID and call `session.process_folder()`.
     * Save the final Freeplane map XML to disk when the traversal completes.
-* [ ] Implement a "Dry Run" flag in your config. This allows you to test the hierarchy generation in Freeplane without actually uploading files or calling the Zotero API.
-* [ ] Setup the `root_map` with the correct Freeplane XML version and a single central "Worldview" node.
+* [X] Implement a "Dry Run" flag in your config. This allows you to test the hierarchy generation in Freeplane without actually uploading files or calling the Zotero API.
 
 ## 8. Post-Migration: Freeplane Setup
 * [ ] **Define Conditional Styles**: Once the script runs, open Freeplane and create rules like: *"If Attribute 'Depth' > 3, then set Font Size = 8pt and Opacity = 40%"*. This completes your vision for the "Semantic Zoom."
@@ -71,28 +70,28 @@ The following critical evaluation identifies opportunities to enhance your scrip
 
 ## 1. Architectural Improvements for Flow & Readability
 
-* **Session Lifecycle Management**:
+* [X] **Session Lifecycle Management**:
     While you are using a `ZOTERO_SESSION`, you are still creating new `msal.PublicClientApplication` and Google `service` objects inside `main`. Moving these into a unified `TransferSession` class would allow you to pass a single object through your `traverse` function rather than a growing list of individual arguments, greatly improving readability.
-* **Decouple Traversal from Logic**:
+* [X] **Decouple Traversal from Logic**:
     Currently, `traverse` handles recursion, API calls, checkpointing, and XML generation in one large block. Extracting the "Process File" logic into a separate function would make the flow easier to follow and simplify debugging.
 
 ## 2. Functional Enhancements for Zotero and OneDrive
 
-* **Atomic Zotero Operations**:
+* [X] **Atomic Zotero Operations**:
     Your `create_or_update_zotero_entry` still performs multiple sequential requests (Search -> Get Children -> Delete -> Post). To make the flow smoother, you can use Zotero’s **Write Actions** or batch processing to reduce the risk of a partial update if your connection drops mid-process.
-* **Path-Aware Deduping**:
+* [X] **Path-Aware Deduping**:
     Your `content_map` currently dedupes based solely on the `underlyingId`. For a "Relationist" worldview, you might want to allow the same content to appear in different branches if it serves a different logical purpose. Adding a flag to toggle between "Global Deduping" and "Branch-Specific Deduping" would improve functionality.
-* **Zotero Metadata Mapping**:
+* [X] **Zotero Metadata Mapping**:
     Your current regex pattern in `safe_name` is sophisticated, but it isn't being used in `create_or_update_zotero_entry` to populate Zotero fields like `date`, `creators`, or `extra`. Passing the parsed metadata dict into the Zotero function would ensure your documented items are as rich as your filenames.
 
 ## 3. Conciseness and Styling in Freeplane
 
-* **Attribute-Based Styles**:
+* [X] **Attribute-Based Styles**:
     Instead of manually setting `STYLE="RootTopic"` based on depth, you can simply set a `Depth` attribute on every node: `node.set("DEPTH", str(depth))`. This allows you to use Freeplane’s **Conditional Styles** feature to manage the "fade into obscurity" effect globally without hard-coding specific style names in Python.
-* **Unified Link Logic**:
+* [X] **Unified Link Logic**:
     You have redundant logic for determining if a link should be a `zot_uri` or a `webUrl` in multiple places. Consolidating this into a helper function like `get_best_link(entry)` would make the code more concise.
 
-## Suggested Code Refinements
+## [X] Suggested Code Refinements
 
 ```python
 # Refinement: Global Metadata Extractor

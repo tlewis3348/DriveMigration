@@ -574,7 +574,9 @@ class FreeplaneMap:
 
 class TransferSession:
     # region: INITIALIZATION & CONFIGURATION
-    def __init__(self):
+    def __init__(self, dry_run: bool = False):
+        self.dry_run: bool = dry_run
+
         # 1. Load Environment Configuration
         self.google_creds_path: str = os.environ.get("GOOGLE_CREDS_PATH", "")
         self.ms_client_id: str = os.environ.get("MS_CLIENT_ID", "")
@@ -688,8 +690,12 @@ class TransferSession:
         if path_key in self.zotero_map:
             return self.zotero_map[path_key]
 
-        # Delegate the actual API creation to the client
-        new_id: str = self.zotero.create_collection(name, parent_id)
+        if self.dry_run:
+            print(f"  -> [DRY RUN] Simulating Zotero Collection: '{name}'")
+            new_id = f"DRY_RUN_COL_{hash(path_key)}"
+        else:
+            # Delegate the actual API creation to the client
+            new_id = self.zotero.create_collection(name, parent_id)
 
         # Manage the persistent state orchestrator
         self.zotero_map[path_key] = new_id
@@ -702,6 +708,12 @@ class TransferSession:
         leveraging the internal naming state.
         """
         self.naming_context.file2context(resolved_filename)
+
+        if self.dry_run:
+            print(f"  -> [DRY RUN] Simulating Zotero Item Sync for: '{self.naming_context.title}'")
+            # Return a valid Freeplane URI format pointing to a mock item
+            return f"zotero://select/library/items/DRY_RUN_{hash(resolved_filename)}"
+
         lookup_key: str = self.naming_context.get_canonical_key()
         item_key: Optional[str] = self.zotero_index.get(lookup_key)
 
@@ -801,6 +813,9 @@ class TransferSession:
         Persists the orchestrator's local state to disk.
         Executes atomically after successful file uploads/folder creations.
         """
+        if self.dry_run:
+            return  # Do not poison the cache during a dry run
+
         # Save File Checkpoint
         with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.checkpoint, f, indent=4)
@@ -923,13 +938,17 @@ class TransferSession:
 
             # 4. Physical Sync: Upload to Microsoft OneDrive
             if not is_duplicate:
-                print(f"  -> Uploading to OneDrive as: '{resolved_name}'")
-                # Suppress the Pylance type warning since we know file_bytes is not None here
-                onedrive_url = self.onedrive.upload_file(resolved_name, file_bytes) # type: ignore
+                if self.dry_run:
+                    print(f"  -> [DRY RUN] Simulating OneDrive upload for: '{resolved_name}'")
+                    onedrive_url = f"https://onedrive.mock/dry_run/{quote(resolved_name)}"
+                else:
+                    print(f"  -> Uploading to OneDrive as: '{resolved_name}'")
+                    # Suppress the Pylance type warning since we know file_bytes is not None here
+                    onedrive_url = self.onedrive.upload_file(resolved_name, file_bytes) # type: ignore
 
-                if not onedrive_url:
-                    print(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
-                    return
+                    if not onedrive_url:
+                        print(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
+                        return
 
                 # Log the newly minted hash to the global content map
                 self.content_map[md5_checksum] = onedrive_url
@@ -966,7 +985,8 @@ if __name__ == "__main__":
     try:
         # 1. Initialize the Orchestrator (Loads environment variables and state)
         print("\n--- Step 1: Initialization ---")
-        session = TransferSession()
+        # session = TransferSession() # Live run
+        session = TransferSession(True) # Dry run
 
         # 2. Build Local Memory Maps
         print("\n--- Step 2: Memory Indexing ---")
