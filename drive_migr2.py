@@ -720,12 +720,18 @@ class TransferSession:
         if item_key:
             # Update existing item
             item_data: Dict[str, Any] = self.zotero.get_item(item_key)
-            item_data["collections"] = [collection_id]
+
+            # Safely append to multiple collections instead of moving
+            existing_collections = item_data.get("collections", [])
+            if collection_id not in existing_collections:
+                existing_collections.append(collection_id)
+            item_data["collections"] = existing_collections
+
             if self.naming_context.full_date:
                 item_data["date"] = self.naming_context.full_date
 
             self.zotero.update_item(item_key, item_data)
-            print(f"Moved existing Zotero item: {self.naming_context.title}")
+            print(f"Updated existing Zotero item: {self.naming_context.title}")
 
             # Flush stale attachments
             children: List[Dict[str, Any]] = self.zotero.get_children(item_key)
@@ -857,6 +863,22 @@ class TransferSession:
             if mime_type == 'application/vnd.google-apps.folder':
                 # Recursive dive into sub-folders
                 self.process_folder(item_id, folder_node, current_collection_id)
+
+            elif mime_type == 'application/vnd.google-apps.shortcut':
+                # Unpack the shortcut and process the original target
+                target_id = item.get('shortcutDetails', {}).get('targetId')
+                target_mime = item.get('shortcutDetails', {}).get('targetMimeType')
+                
+                if target_mime != 'application/vnd.google-apps.folder':
+                    print(f"Following shortcut: '{item_name}'")
+                    self.process_file(
+                        g_file_id=target_id, 
+                        g_filename=item_name, 
+                        mime_type=target_mime, 
+                        md5_checksum=md5_checksum, # Shortcuts don't have md5s, so it will download to check
+                        parent_node=folder_node, 
+                        collection_id=current_collection_id
+                    )
 
             elif mime_type.startswith('application/vnd.google-apps.') and mime_type not in [
                 "application/vnd.google-apps.document", 
