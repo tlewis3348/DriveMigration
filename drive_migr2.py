@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import tempfile
@@ -17,6 +18,21 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
 from googleapiclient.discovery import build  # type: ignore
 from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+
+# region: LOGGING CONFIG
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        # Writes the permanent log to disk (safe from terminal truncation)
+        logging.FileHandler("migration.log", encoding='utf-8'),
+        # Echoes the log to the console
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+# endregion
 
 # region: CONFIG
 OUTPUT_MM: str = "index.mm"
@@ -71,7 +87,7 @@ class GoogleDriveClient:
             ).execute()
             return response.get("name", "Unknown Folder")
         except Exception as e:
-            print(f"Error getting folder name for {folder_id}: {e}")
+            logger.error(f"Error getting folder name for {folder_id}: {e}")
             return "Unknown Folder"
 
     def get_children(self, folder_id: str) -> List[Dict[str, Any]]:
@@ -126,7 +142,7 @@ class GoogleDriveClient:
             if not file_name.lower().endswith(ext):
                 file_name = f"{file_name}{ext}"
         elif mime_type.startswith("application/vnd.google-apps."):
-            print(f"Skipping non-exportable Google file: {file_name} ({mime_type})")
+            logger.info(f"Skipping non-exportable Google file: {file_name} ({mime_type})")
             return None
         else:
             request: Any = self.service.files().get_media(fileId=file_id)
@@ -143,10 +159,10 @@ class GoogleDriveClient:
                 except (ConnectionResetError, Exception) as e:
                     if attempt < max_retries - 1:
                         wait_time: int = 2 ** attempt
-                        print(f"Download error ({type(e).__name__}). Retrying in {wait_time}s...")
+                        logger.warning(f"Download error ({type(e).__name__}). Retrying in {wait_time}s...")
                         time.sleep(wait_time)
                     else:
-                        print(f"Permanent download failure after {max_retries} attempts.")
+                        logger.error(f"Permanent download failure after {max_retries} attempts.")
                         raise
 
         return buffer.getvalue(), file_name
@@ -224,7 +240,7 @@ class OneDriveClient:
             return response.json().get("webUrl", "")
 
         # Large File Resumable Upload Session
-        print(f"Large file detected ({size / 1024 / 1024:.2f} MB). Starting chunked session...")
+        logger.info(f"Large file detected ({size / 1024 / 1024:.2f} MB). Starting chunked session...")
         session_response: requests.Response = requests.post(f"{base_url}:/createUploadSession", headers=auth_headers)
         session_response.raise_for_status()
 
@@ -250,11 +266,11 @@ class OneDriveClient:
                     if last_response.status_code in (200, 201, 202):
                         break
                     elif last_response.status_code >= 500:
-                        print(f"Server error {last_response.status_code}. Retrying chunk...")
+                        logger.warning(f"Server error {last_response.status_code}. Retrying chunk...")
                     else:
                         raise RuntimeError(f"Chunk upload failed at {start}-{end}: {last_response.text}")
                 except Exception as e:
-                    print(f"Connection error ({type(e).__name__}). Retrying chunk...")
+                    logger.warning(f"Connection error ({type(e).__name__}). Retrying chunk...")
 
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
@@ -287,7 +303,7 @@ class ZoteroClient:
 
             if response.status_code == 429:
                 wait_time: int = int(response.headers.get("Retry-After", 2 ** attempt))
-                print(f"Zotero rate limit hit. Waiting {wait_time}s...")
+                logger.info(f"Zotero rate limit hit. Waiting {wait_time}s...")
                 time.sleep(wait_time)
                 continue
 
@@ -303,6 +319,7 @@ class ZoteroClient:
             payload["parentCollection"] = parent_id
 
         response = self.request("POST", "collections", json=[payload])
+        logger.info(f"Collection created with key: {response.json()['successful']['0']['key']}")
         return response.json()["successful"]["0"]["key"]
 
     def get_item(self, item_key: str) -> Dict[str, Any]:
@@ -311,6 +328,7 @@ class ZoteroClient:
 
     def update_item(self, item_key: str, item_data: Dict[str, Any]) -> None:
         """Pushes an updated schema payload back to an existing item."""
+        logger.info(f"Updating item: {item_key}")
         self.request("PUT", f"items/{quote(item_key)}", json=item_data)
 
     def get_children(self, item_key: str) -> List[Dict[str, Any]]:
@@ -324,6 +342,7 @@ class ZoteroClient:
     def create_item(self, payload: Dict[str, Any]) -> str:
         """Creates a new record (document or attachment) and returns its key."""
         response = self.request("POST", "items", json=[payload])
+        logger.info(f"Item created with key: {response.json()['successful']['0']['key']}")
         return response.json()["successful"]["0"]["key"]
 
     def get_all_items(self) -> List[Dict[str, Any]]:
@@ -586,7 +605,7 @@ class FreeplaneMap:
 
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(full_xml)
-        print(f"Freeplane map successfully generated at: {filepath}")
+        logger.info(f"Freeplane map successfully generated at: {filepath}")
 
 class TransferSession:
     # region: INITIALIZATION & CONFIGURATION
@@ -667,7 +686,7 @@ class TransferSession:
         except Exception as e:
             if os.path.exists(temp_name):
                 os.remove(temp_name)
-            print(f"Failed to save state to {filepath}: {str(e)}")
+            logger.error(f"Failed to save state to {filepath}: {str(e)}")
             raise
     # endregion
 
@@ -677,7 +696,7 @@ class TransferSession:
         Builds a memory map of the Zotero library to prevent duplicate item creation.
         Maps canonical keys (Title + Date + Author) to Zotero Item IDs.
         """
-        print("Building local Zotero library index...")
+        logger.info("Building local Zotero library index...")
 
         # 1. Fetch raw data from the client
         all_items: List[Dict[str, Any]] = self.zotero.get_all_items()
@@ -694,7 +713,7 @@ class TransferSession:
             if canonical_key:
                 self.zotero_index[canonical_key] = item["key"]
 
-        print(f"Index complete. {len(self.zotero_index)} unique research items mapped.")
+        logger.info(f"Index complete. {len(self.zotero_index)} unique research items mapped.")
 
     def sync_collection(self, name: str, parent_id: Optional[str] = None) -> str:
         """
@@ -707,7 +726,7 @@ class TransferSession:
             return self.zotero_map[path_key]
 
         if self.dry_run:
-            print(f"  -> [DRY RUN] Simulating Zotero Collection: '{name}'")
+            logger.info(f"  -> [DRY RUN] Simulating Zotero Collection: '{name}'")
             new_id = f"DRY_RUN_COL_{hashlib.md5(path_key.encode('utf-8')).hexdigest()[:8]}"
         else:
             # Delegate the actual API creation to the client
@@ -726,7 +745,7 @@ class TransferSession:
         self.naming_context.file2context(resolved_filename)
 
         if self.dry_run:
-            print(f"  -> [DRY RUN] Simulating Zotero Item Sync for: '{self.naming_context.title}'")
+            logger.info(f"  -> [DRY RUN] Simulating Zotero Item Sync for: '{self.naming_context.title}'")
             # Return a valid Freeplane URI format pointing to a mock item
             return f"zotero://select/library/items/DRY_RUN_{hashlib.md5(resolved_filename.encode('utf-8')).hexdigest()[:8]}"
 
@@ -747,7 +766,7 @@ class TransferSession:
                 item_data["date"] = self.naming_context.full_date
 
             self.zotero.update_item(item_key, item_data)
-            print(f"Updated existing Zotero item: {self.naming_context.title}")
+            logger.info(f"Updated existing Zotero item: {self.naming_context.title}")
 
             # Flush stale attachments
             children: List[Dict[str, Any]] = self.zotero.get_children(item_key)
@@ -775,7 +794,7 @@ class TransferSession:
                 new_item_payload["extra"] = f"Prefix: {self.naming_context.prefix}"
 
             item_key = self.zotero.create_item(new_item_payload)
-            print(f"Created new Zotero item: {self.naming_context.title}")
+            logger.info(f"Created new Zotero item: {self.naming_context.title}")
 
         # Attach OneDrive link
         attachment_payload: Dict[str, Any] = {
@@ -826,7 +845,7 @@ class TransferSession:
             ascii_pointer += 1
 
         self.used_names.add(candidate_name)
-        print(f"Prefix Collision Resolved: '{filename}' -> '{candidate_name}'")
+        logger.info(f"Prefix Collision Resolved: '{filename}' -> '{candidate_name}'")
         return candidate_name
 
     def save_state(self) -> None:
@@ -859,7 +878,7 @@ class TransferSession:
         """
         # 1. Fetch Folder Metadata
         folder_name: str = self.gdrive.get_folder_name(g_folder_id)
-        print(f"Directory Dive: Entering '{folder_name}'")
+        logger.info(f"Processing folder: '{folder_name}'")
 
         # 2. Structural Mapping: Resolve or create the Zotero Collection
         current_collection_id: str = self.sync_collection(folder_name, parent_zotero_id)
@@ -886,7 +905,7 @@ class TransferSession:
                 target_mime = item.get('shortcutDetails', {}).get('targetMimeType')
                 
                 if target_mime != 'application/vnd.google-apps.folder':
-                    print(f"Following shortcut: '{item_name}'")
+                    logger.info(f"Following shortcut: '{item_name}'")
                     self.process_file(
                         g_file_id=target_id, 
                         g_filename=item_name, 
@@ -903,7 +922,7 @@ class TransferSession:
                 "application/vnd.google-apps.drawing"
             ]:
                 # Skip non-exportable Google formats (Forms, Sites, Maps, etc.)
-                print(f"Skipping non-exportable Google format: '{item_name}'")
+                logger.info(f"Skipping non-exportable Google format: '{item_name}'")
                 continue
 
             else:
@@ -933,7 +952,7 @@ class TransferSession:
         """
         # 1. Checkpoint Defense
         if g_file_id in self.checkpoint:
-            print(f"Checkpoint Skip: '{g_filename}' already migrated.")
+            logger.info(f"Checkpoint Skip: '{g_filename}' already migrated.")
             cached_data = self.checkpoint[g_file_id]
 
             # Rapidly restore the Freeplane node from the cached history
@@ -941,7 +960,7 @@ class TransferSession:
             parent_node.add_child(cached_data["resolved_name"], link=best_link)
             return
 
-        print(f"Processing File: '{g_filename}'")
+        logger.info(f"Processing File: '{g_filename}'")
 
         onedrive_url: str = ""
         file_bytes: Optional[bytes] = None
@@ -950,7 +969,7 @@ class TransferSession:
 
         # 2. Smart Deduplication (Pre-Download Check)
         if md5_checksum and md5_checksum in self.content_map:
-            print(f"  -> Smart Deduplication: Exact hash match found globally before download.")
+            logger.info(f"  -> Smart Deduplication: Exact hash match found globally before download.")
             onedrive_url = self.content_map[md5_checksum]
             is_duplicate = True
 
@@ -973,29 +992,29 @@ class TransferSession:
             if not md5_checksum:
                 md5_checksum = self.calc_stream_hash(file_bytes)
                 if md5_checksum in self.content_map:
-                    print(f"  -> Post-Download Deduplication: Exact binary match found.")
+                    logger.info(f"  -> Post-Download Deduplication: Exact binary match found.")
                     onedrive_url = self.content_map[md5_checksum]
                     is_duplicate = True
 
             # 4. Physical Sync: Upload to Microsoft OneDrive
             if not is_duplicate:
                 if self.dry_run:
-                    print(f"  -> [DRY RUN] Simulating OneDrive upload for: '{resolved_name}'")
+                    logger.info(f"  -> [DRY RUN] Simulating OneDrive upload for: '{resolved_name}'")
                     onedrive_url = f"https://onedrive.mock/dry_run/{quote(resolved_name)}"
                 else:
-                    print(f"  -> Uploading to OneDrive as: '{resolved_name}'")
+                    logger.info(f"  -> Uploading to OneDrive as: '{resolved_name}'")
                     # Suppress the Pylance type warning since we know file_bytes is not None here
                     onedrive_url = self.onedrive.upload_file(resolved_name, file_bytes) # type: ignore
 
                     if not onedrive_url:
-                        print(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
+                        logger.error(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
                         return
 
                 # Log the newly minted hash to the global content map
                 self.content_map[md5_checksum] = onedrive_url
 
         # 5. Relational Sync: Zotero Database
-        print(f"  -> Synchronizing Zotero metadata...")
+        logger.info(f"  -> Synchronizing Zotero metadata...")
         zotero_uri = self.sync_item(
             resolved_filename=resolved_name,
             onedrive_url=onedrive_url,
@@ -1017,45 +1036,44 @@ class TransferSession:
 
         # Saves to disk ONLY if no exceptions were thrown during APIs
         self.save_state()
-        print(f"  -> Success: '{resolved_name}' migration complete.")
+        logger.info(f"  -> Success: '{resolved_name}' migration complete.")
     # endregion
 
 if __name__ == "__main__":
-    print("Initializing Drive Migration Protocol...")
+    logger.info("Initializing Drive Migration Protocol...")
 
     try:
         # 1. Initialize the Orchestrator (Loads environment variables and state)
-        print("\n--- Step 1: Initialization ---")
+        logger.info("\n--- Step 1: Initialization ---")
         # session = TransferSession() # Live run
         session = TransferSession(True) # Dry run
 
         # 2. Build Local Memory Maps
-        print("\n--- Step 2: Memory Indexing ---")
+        logger.info("\n--- Step 2: Memory Indexing ---")
         session.build_index()
 
         # 3. Define the Target
-        print("\n--- Step 3: Execution ---")
-        # TODO: Replace this string with the actual ID of your root Google Drive folder
+        logger.info("\n--- Step 3: Execution ---")
         ROOT_GDRIVE_FOLDER_ID = os.environ.get("ROOT_FOLDER_ID", "")
 
         if ROOT_GDRIVE_FOLDER_ID == "":
-            print("WARNING: Please set your ROOT_FOLDER_ID in the .env file.")
+            logger.warning("Please set your ROOT_FOLDER_ID in the .env file.")
             exit(1)
 
         # 4. Ignite the Traversal Engine
-        print("\n--- Step 4: Traversal ---")
+        logger.info("\n--- Step 4: Traversal ---")
         session.process_folder(
             g_folder_id=ROOT_GDRIVE_FOLDER_ID, 
             parent_node=session.map_engine.root_node
         )
 
         # 5. Finalize the Visual Layer
-        print("\n--- Step 5: Finalization ---")
+        logger.info("\n--- Step 5: Finalization ---")
         output_map_path = "My_Life_and_Worldview.mm"
         session.map_engine.save(output_map_path)
 
-        print("\nMigration Protocol Complete!")
+        logger.info("\nMigration Protocol Complete!")
 
     except Exception as e:
-        print(f"\nCRITICAL FAILURE: {type(e).__name__} - {e}")
+        logger.error(f"\nCRITICAL FAILURE: {type(e).__name__} - {e}")
         # The state is safely saved during process_file, so it is safe to exit here.
