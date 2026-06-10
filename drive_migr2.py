@@ -40,7 +40,7 @@ CHECKPOINT_FILE: str = "checkpoint.json"
 COLLECTION_MAP_FILE: str = "zotero_collections.json"
 CONTENT_MAP_FILE: str = "content_map.json"
 
-load_dotenv() # Load environment variables
+load_dotenv(override=True) # Load environment variables
 # endregion
 
 class GoogleDriveClient:
