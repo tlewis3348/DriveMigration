@@ -26,7 +26,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
         # Writes the permanent log to disk (safe from terminal truncation)
-        logging.FileHandler("migration.log", encoding='utf-8'),
+        logging.FileHandler("migration.log", encoding='utf-8', mode='w'),
         # Echoes the log to the console
         logging.StreamHandler()
     ]
@@ -49,7 +49,7 @@ class GoogleDriveClient:
     # We only need read permissions for the migration
     SCOPES: List[str] = ['https://www.googleapis.com/auth/drive.readonly']
 
-    def __init__(self, client_secrets_path: str, token_cache_path: str = "token.json"):
+    def __init__(self, client_secrets_path: str, token_cache_path: str = "token_google.json"):
         """Initializes the client and builds the authenticated service."""
         if not client_secrets_path or not os.path.exists(client_secrets_path):
             raise FileNotFoundError(f"Google client secrets not found at: {client_secrets_path}")
