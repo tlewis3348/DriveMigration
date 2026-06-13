@@ -7,7 +7,7 @@ import re
 import tempfile
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, IO, List, Optional, Set, Tuple
 from urllib.parse import quote
 
 import msal  # type: ignore
@@ -540,72 +540,48 @@ class ResearchFileContext:
         return f"{year}.{quarter}.{ref}"
     # endregion
 
-class FreeplaneMap:
-    """Encapsulates the generation of a Freeplane .mm XML file."""
+class MarkdownMap:
+    """
+    Encapsulates the generation of a deeply nested Markdown outline.
+    Replaces the Freeplane XML engine with a text-based hierarchy.
+    """
+    def __init__(self, title: str) -> None:
+        self.output_path: str = title.replace(" ", "_") + ".md"
+        self.title: str = title
+        self.file: Optional[IO[str]] = None
 
-    @staticmethod
-    def get_best_link(zotero_uri: Optional[str], onedrive_url: Optional[str]) -> Optional[str]:
-        """
-        Link Prioritizer: Resolves the optimal URI for the mind map node.
-        Priority 1: Zotero local database URI
-        Priority 2: OneDrive web URL
-        """
+    def open(self) -> None:
+        """Opens the file stream with explicit UTF-8 encoding."""
+        self.file = open(self.output_path, "w", encoding="utf-8")
+        self.file.write(f"# {self.title}\n\n")
+
+    def add_folder(self, folder_name: str, depth: int) -> None:
+        """Writes a tab-indented folder node with bold formatting."""
+        if not self.file:
+            raise RuntimeError("Markdown file is not open.")
+        self.file.write(f"{"\t" * depth}- **{folder_name}**\n")
+
+    def add_file(self, filename: str, zotero_uri: Optional[str], onedrive_url: Optional[str], depth: int) -> None:
+        """Writes a tab-indented file node with inline hyperlink routing."""
+        if not self.file:
+            raise RuntimeError("Markdown file is not open.")
+
+        links: List[str] = []
         if zotero_uri:
-            return zotero_uri
-        return onedrive_url
+            links.append(f"[Zotero]({zotero_uri})")
+        if onedrive_url:
+            links.append(f"[OneDrive]({onedrive_url})")
 
-    class MapNode:
-        """Represents a single node (folder or file) within the mind map."""
-        def __init__(self, text: str, link: Optional[str] = None, depth: int = 0):
-            self.text: str = text
-            self.link: Optional[str] = link
-            self.depth: int = depth
-            self.children: List['FreeplaneMap.MapNode'] = []
+        links_str: str = " | ".join(links)
+        if links_str:
+            links_str = f" ({links_str})"
 
-        def add_child(self, text: str, link: Optional[str] = None) -> 'FreeplaneMap.MapNode':
-            """
-            Instantiates a child node, automatically incrementing its depth attribute 
-            based on its parent's location in the tree.
-            """
-            # Pass the inherited depth + 1 to the new child
-            child: 'FreeplaneMap.MapNode' = FreeplaneMap.MapNode(text, link, depth=self.depth + 1)
-            self.children.append(child)
-            return child
+        self.file.write(f"{"\t" * depth}- {links_str}{filename}\n")
 
-        def render(self) -> str:
-            """Recursively generates the XML string for this node, injecting style attributes."""
-            safe_text: str = self.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
-
-            node_xml: str = f'<node TEXT="{safe_text}"'
-            if self.link:
-                safe_link: str = self.link.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;")
-                node_xml += f' LINK="{safe_link}"'
-
-            node_xml += ">"
-
-            # Inject the standard Freeplane Attribute for the Conditional Styles engine
-            node_xml += f'<attribute NAME="Depth" VALUE="{self.depth}"/>'
-
-            for child in self.children:
-                node_xml += child.render()
-
-            node_xml += "</node>"
-            return node_xml
-
-    def __init__(self, root_text: str):
-        # The core root node acts as the 0-depth anchor
-        self.root_node: 'FreeplaneMap.MapNode' = self.MapNode(root_text, depth=0)
-
-    def save(self, filepath: str) -> None:
-        """Compiles the complete XML document and writes it to disk."""
-        xml_header: str = '<?xml version="1.0" encoding="UTF-8"?>\n<map version="1.9.13">\n'
-        xml_footer: str = '\n</map>'
-
-        full_xml: str = f"{xml_header}{self.root_node.render()}{xml_footer}"
-
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(full_xml)
-        logger.info(f"Freeplane map successfully generated at: {filepath}")
+    def close(self) -> None:
+        """Safely flushes and closes the file stream."""
+        if self.file:
+            self.file.close()
 
 class TransferSession:
     # region: INITIALIZATION & CONFIGURATION
@@ -620,14 +596,16 @@ class TransferSession:
         self.zotero_api_key: str = os.environ.get("ZOTERO_API_KEY", "")
         self.root_folder_id: str = os.environ.get("ROOT_FOLDER_ID", "")
 
-        if not all([
-                    self.google_creds_path,
-                    self.ms_client_id,
-                    self.ms_authority,
-                    self.zotero_user_id,
-                    self.zotero_api_key,
-                    self.root_folder_id
-                ]):
+        if not all(
+                    [
+                        self.google_creds_path,
+                        self.ms_client_id,
+                        self.ms_authority,
+                        self.zotero_user_id,
+                        self.zotero_api_key,
+                        self.root_folder_id
+                    ]
+                ):
             raise EnvironmentError("Missing required environment configuration tokens inside .env file.")
 
         # 2. Instantiate API Service Clients (The Physical Layer)
@@ -638,7 +616,7 @@ class TransferSession:
 
         # 3. Instantiate Local Context Engines
         self.naming_context: ResearchFileContext = ResearchFileContext()
-        self.map_engine: FreeplaneMap = FreeplaneMap("My Life and Worldview")
+        self.map_engine: MarkdownMap = MarkdownMap("My Life and Worldview")
 
         # 4. Initialize State & Memory Databases
         self.checkpoint: Dict[str, Any] = self._load_json(CHECKPOINT_FILE)
@@ -870,7 +848,7 @@ class TransferSession:
     # endregion
 
     # region: TRANSFER LOGIC
-    def process_folder(self, g_folder_id: str, parent_node: 'FreeplaneMap.MapNode', parent_zotero_id: Optional[str] = None) -> None:
+    def process_folder(self, g_folder_id: str, parent_zotero_id: Optional[str] = None, depth: int = 0) -> None:
         """
         Recursively walks the Google Drive directory tree.
         Mirrors the folder structure into Zotero Collections, builds the Freeplane map hierarchy,
@@ -884,7 +862,7 @@ class TransferSession:
         current_collection_id: str = self.sync_collection(folder_name, parent_zotero_id)
 
         # 3. Visual Mapping: Create the Freeplane Node for this folder
-        folder_node = parent_node.add_child(folder_name)
+        self.map_engine.add_folder(folder_name, depth)
 
         # 4. Fetch all children (files and sub-folders) within this directory
         children: List[Dict[str, Any]] = self.gdrive.get_children(g_folder_id)
@@ -914,7 +892,7 @@ class TransferSession:
 
             if mime_type == 'application/vnd.google-apps.folder':
                 # Recursive dive into sub-folders
-                self.process_folder(item_id, folder_node, current_collection_id)
+                self.process_folder(item_id, current_collection_id, depth + 1)
 
             elif mime_type == 'application/vnd.google-apps.shortcut':
                 # Unpack the shortcut and process the original target
@@ -927,8 +905,8 @@ class TransferSession:
                         g_filename=item_name, 
                         mime_type=target_mime, 
                         md5_checksum=md5_checksum, # Shortcuts don't have md5s, so it will download to check
-                        parent_node=folder_node, 
-                        collection_id=current_collection_id
+                        collection_id=current_collection_id,
+                        depth=depth + 1
                     )
 
             elif mime_type.startswith('application/vnd.google-apps.') and mime_type not in [
@@ -949,8 +927,8 @@ class TransferSession:
                     g_filename=item_name, 
                     mime_type=mime_type, 
                     md5_checksum=md5_checksum,
-                    parent_node=folder_node, 
-                    collection_id=current_collection_id
+                    collection_id=current_collection_id,
+                    depth=depth + 1
                 )
 
     def process_file(
@@ -959,21 +937,27 @@ class TransferSession:
                 g_filename: str,
                 mime_type: str,
                 md5_checksum: Optional[str],
-                parent_node: 'FreeplaneMap.MapNode',
-                collection_id: str
+                collection_id: str,
+                depth: int
             ) -> None:
         """
         The atomic data transport loop. Manages downloading, deduplication, 
         namespace resolution, OneDrive uploading, Zotero integration, and Freeplane mapping.
         """
+        logger.info(f"Processing file: '{g_filename}'")
+
         # 1. Checkpoint Defense
         if g_file_id in self.checkpoint:
             logger.info(f"Checkpoint Skip: '{g_filename}' already migrated.")
             cached_data = self.checkpoint[g_file_id]
 
             # Rapidly restore the Freeplane node from the cached history
-            best_link = FreeplaneMap.get_best_link(cached_data.get("zotero_uri"), cached_data.get("onedrive_url"))
-            parent_node.add_child(cached_data["resolved_name"], link=best_link)
+            self.map_engine.add_file(
+                cached_data.get("resolved_name", g_filename),
+                cached_data.get("zotero_uri"),
+                cached_data.get("onedrive_url"),
+                depth
+            )
             return
 
         logger.info(f"Processing File: '{g_filename}'")
@@ -1038,8 +1022,7 @@ class TransferSession:
         )
 
         # 6. Visual Hierarchy Sync: Freeplane XML
-        best_link = FreeplaneMap.get_best_link(zotero_uri, onedrive_url)
-        parent_node.add_child(resolved_name, link=best_link)
+        self.map_engine.add_file(resolved_name, zotero_uri, onedrive_url, depth)
 
         # 7. Checkpoint Integrity: Record Success and Persist State
         self.checkpoint[g_file_id] = {
@@ -1079,14 +1062,12 @@ if __name__ == "__main__":
         # 4. Ignite the Traversal Engine
         logger.info("\n--- Step 4: Traversal ---")
         session.process_folder(
-            g_folder_id=ROOT_GDRIVE_FOLDER_ID, 
-            parent_node=session.map_engine.root_node
+            g_folder_id=ROOT_GDRIVE_FOLDER_ID
         )
 
         # 5. Finalize the Visual Layer
         logger.info("\n--- Step 5: Finalization ---")
-        output_map_path = "My_Life_and_Worldview.mm"
-        session.map_engine.save(output_map_path)
+        session.map_engine.close()
 
         logger.info("\nMigration Protocol Complete!")
 
