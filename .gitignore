@@ -5,3 +5,4 @@ token.json
 __pycache__/
 drive_migr.py
 migration.log
+checkpoint.json

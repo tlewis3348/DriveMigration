@@ -889,7 +889,24 @@ class TransferSession:
         # 4. Fetch all children (files and sub-folders) within this directory
         children: List[Dict[str, Any]] = self.gdrive.get_children(g_folder_id)
 
+        # Separate folders and files to enforce strict directory-first ordering
+        folders_list: List[Dict[str, Any]] = []
+        files_list: List[Dict[str, Any]] = []
+
         for item in children:
+            if item['mimeType'] == 'application/vnd.google-apps.folder':
+                folders_list.append(item)
+            else:
+                files_list.append(item)
+
+        # Sort both lists independently by name (alphabetical case-insensitive)
+        folders_list.sort(key=lambda x: x['name'].lower())
+        files_list.sort(key=lambda x: x['name'].lower())
+
+        # Recombine: Folders seamlessly occupy the top positions, files settle below
+        sorted_children: List[Dict[str, Any]] = folders_list + files_list
+
+        for item in sorted_children:
             item_id: str = item['id']
             item_name: str = item['name']
             mime_type: str = item['mimeType']
@@ -903,7 +920,6 @@ class TransferSession:
                 # Unpack the shortcut and process the original target
                 target_id = item.get('shortcutDetails', {}).get('targetId')
                 target_mime = item.get('shortcutDetails', {}).get('targetMimeType')
-                
                 if target_mime != 'application/vnd.google-apps.folder':
                     logger.info(f"Following shortcut: '{item_name}'")
                     self.process_file(
