@@ -120,3 +120,35 @@ def add_to_freeplane(parent_xml: ET.Element, name: str, link: str, depth: int) -
 The script is exceptionally well-structured for a complex migration. By moving toward a **class-based session** and **attribute-based Freeplane styling**, you will achieve a "cleaner" flow that is easier to maintain as your 20-year library continues to grow.
 
 This visualization confirms that your current `depth` logic is the correct way to handle a "Google Earth" style zoom within a deterministic XML hierarchy. Should you implement the **Zotero Metadata Mapping** mentioned above, your "Details" level in Freeplane will become significantly more informative.
+
+# Debugging & Testing
+* [ ] **Dry Run Testing**: Run migration tool in the "dry run" mode to validate the map generation without making actual API calls. This allows you to verify the structure and metadata extraction logic.
+* [ ] **Full Functionality Testing**: After confirming the map structure, run the full migration on a small subset of files to ensure that the API interactions, checkpointing, and deduplication logic work as expected.
+
+# Version 3 Features
+
+## 1. Spatial Multi-Scale Rendering Layer ("Google Maps" UI)
+* [ ] **Implement Infinite Pan and Zoom Mechanics**: Code a 2D camera matrix transform layer that interprets trackpad scrolls, mouse drags, and mobile touch gestures (pinch-to-zoom) into deterministic coordinates on an infinite mathematical grid.
+* [ ] **Construct a Quadtree Spatial Index**: Build an in-memory Quadtree data structure to host every visual element coordinate. Panning the map must trigger localized bounding-box queries (O(log N) complexity) to ensure that only nodes within the viewport boundary are passed to the draw loop, allowing 60 FPS performance on mobile devices.
+* [ ] **Develop Level-of-Detail (LoD) Progressive Disclosure**:
+  * [ ] **Zoom Level 0–2 (Global Category View)**: Display only the macro structural worldview categories (e.g., 01 Theory, 02 Practice) as large, high-contrast anchor hubs. Sub-branches are completely culled from the drawing queue to conserve memory.
+  * [ ] **Zoom Level 3–6 (Regional Sub-Category View)**: Fade mid-level structural folders (e.g., Epistemology, Apologetics) into view as the camera descends. Deep text strings remain hidden.
+  * [ ] **Zoom Level 7+ (Street Level Detail)**: Render the fine details—individual research item filenames, clickable attachment links, and status tags—at full opacity.
+
+## 2. Advanced Topological Topography (Multi-Parent & Relational Proximity)
+* [ ] **Implement Multi-Parent Graph Node Architecture**: Break away from standard tree constraints to allow Graph structures. If a single Zotero item exists in multiple collections (or is targeted by multiple Google Drive shortcuts), the renderer must map incoming directional vectors from all parent nodes to that single physical coordinate point.
+* [ ] **Engineer Cross-Collection Proximity Anchoring ("Geographic Closeness")**:
+  * [ ] Establish an invisible relational weight configuration between distinct collections that reference one another.
+  * [ ] Write a force-directed layout layout subroutine that pulls cross-referenced collections geographically closer to one another on the coordinate map, even if no visible hierarchical lines connect them in the viewport.
+* [ ] **Integrate Protocol Deep-Linking**: Bind touch and click interactions directly to node boundaries. Tapping a visible research node must execute a native system call to trigger the local application handlers (zotero://select/... or your local OneDrive file paths) directly from the desktop or mobile device.
+
+# Version 4 Features
+
+## 1. Bi-Directional Zotero Read/Write Frontend
+* [ ] **Implement Interactive Collection Creation**: Build tools directly into the Canvas UI to allow the generation of new Zotero collections by right-clicking or long-pressing on the coordinate map.
+* [ ] **Build Item Modification Windows**: Construct data-entry fields to create parent Zotero items, attach files, and modify standard bibliographic metadata keys (Author, Title, Date, Publication) directly through the product frontend.
+* [ ] **Design API Delta Synchronization**: Code an asynchronous network layer that pushes local modifications directly to the Zotero Web API and immediately updates your local data stream without requiring a full library rebuild.
+
+## 2. Provider Agnosticism & Template Customization
+* [ ] **Abstract Cloud Storage Access Layers**: Decouple the data attachment logic from Microsoft Graph. Build interface adapters to allow users to select from a wider array of storage backends (e.g., local hard drives, Proton Drive, Nextcloud, or standard SFTP servers).
+* [ ] **Implement a Dynamic Filename Template Engine**: Create a configuration parser that allows users to write custom formatting strings (e.g., [Prefix] [Author] - [Title]) using the metadata dictionary. The engine must automatically rename physical files and update Zotero attachments globally based on the active template rules.
