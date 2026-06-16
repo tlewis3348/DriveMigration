@@ -110,7 +110,7 @@ class GoogleDriveClient:
 
         return results
 
-    def download_file(self, file_id: str, mime_type: str, file_name: str) -> str:
+    def download_file(self, file_id: str, mime_type: str, file_name: str) -> Optional[str]:
         """
         Downloads a file into a memory buffer. 
         Automatically converts Google Workspace formats to standard Office XML formats.
@@ -988,10 +988,8 @@ class TransferSession:
             is_duplicate = True
         else:
             # 3. Data Ingestion
-            temp_file_path: str = self.gdrive.download_file(g_file_id, mime_type, g_filename)
+            temp_file_path: Optional[str] = self.gdrive.download_file(g_file_id, mime_type, g_filename)
             if not temp_file_path:
-                if os.path.exists(temp_file_path):
-                    os.remove(temp_file_path)
                 return  # Helper method logs the specific skip/failure reason
 
             # Secondary Deduplication Check for Workspace files (no native md5)
