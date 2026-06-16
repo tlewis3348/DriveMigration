@@ -123,7 +123,10 @@ This visualization confirms that your current `depth` logic is the correct way t
 
 # Debugging & Testing
 * [ ] **Dry Run Testing**: Run migration tool in the "dry run" mode to validate the map generation without making actual API calls. This allows you to verify the structure and metadata extraction logic.
+  * [ ] Fix issues with 2008.4.D32 Sexual Morality and Its Implications for Art - jimberg.com.pdf not being parsed correctly.
 * [ ] **Full Functionality Testing**: After confirming the map structure, run the full migration on a small subset of files to ensure that the API interactions, checkpointing, and deduplication logic work as expected.
+* [ ] **File Statistics**: After migration, generate a report of migrated files, including counts of new Zotero items created, existing items updated, and any files that were skipped due to deduplication.
+* [ ] **Distinguish Between File Owners**: If the file is a Google Docs, Sheets, or Slides format that I created, don't modify the filename. If it is a file created by someone else, apply the same renaming logic.
 
 # Version 3 Features
 

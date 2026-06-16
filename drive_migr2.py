@@ -1,5 +1,5 @@
+import gc
 import hashlib
-import io
 import json
 import logging
 import os
@@ -7,7 +7,7 @@ import re
 import tempfile
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, IO, List, Optional, Set, Tuple
+from typing import IO, Any, Dict, List, Optional, Set
 from urllib.parse import quote
 
 import msal  # type: ignore
@@ -110,7 +110,7 @@ class GoogleDriveClient:
 
         return results
 
-    def download_file(self, file_id: str, mime_type: str, file_name: str) -> Optional[Tuple[bytes, str]]:
+    def download_file(self, file_id: str, mime_type: str, file_name: str) -> str:
         """
         Downloads a file into a memory buffer. 
         Automatically converts Google Workspace formats to standard Office XML formats.
@@ -134,8 +134,6 @@ class GoogleDriveClient:
             }
         }
 
-        buffer: io.BytesIO = io.BytesIO()
-
         if mime_type in export_map:
             request: Any = self.service.files().export_media(fileId=file_id, mimeType=export_map[mime_type]["target"])
             ext: str = export_map[mime_type]["ext"]
@@ -147,25 +145,28 @@ class GoogleDriveClient:
         else:
             request: Any = self.service.files().get_media(fileId=file_id)
 
-        downloader: MediaIoBaseDownload = MediaIoBaseDownload(buffer, request)
-        done: bool = False
-        max_retries: int = 5
+        temp_file_path: str = tempfile.NamedTemporaryFile(delete=False).name
 
-        while not done:
-            for attempt in range(max_retries):
-                try:
-                    _, done = downloader.next_chunk()
-                    break
-                except (ConnectionResetError, Exception) as e:
-                    if attempt < max_retries - 1:
-                        wait_time: int = 2 ** attempt
-                        logger.warning(f"Download error ({type(e).__name__}). Retrying in {wait_time}s...")
-                        time.sleep(wait_time)
-                    else:
-                        logger.error(f"Permanent download failure after {max_retries} attempts.")
-                        raise
+        with open(temp_file_path, "wb") as tmp_file:
+            downloader = MediaIoBaseDownload(tmp_file, request)
+            done = False
+            max_retries = 5
 
-        return buffer.getvalue(), file_name
+            while not done:
+                for attempt in range(max_retries):
+                    try:
+                        _, done = downloader.next_chunk()
+                        break
+                    except (ConnectionResetError, Exception) as e:
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt
+                            logger.warning(f"Download error ({type(e).__name__}). Retrying in {wait_time}s...")
+                            time.sleep(wait_time)
+                        else:
+                            logger.error(f"Permanent download failure after {max_retries} attempts.")
+                            raise
+
+        return temp_file_path
 
 class OneDriveClient:
     """Handles all authentication and upload operations for the Microsoft Graph API."""
@@ -220,13 +221,18 @@ class OneDriveClient:
 
         raise RuntimeError("Failed to silently acquire token. The session may have fatally expired.")
 
-    def upload_file(self, filename: str, data: bytes) -> str:
+    def upload_file(self, filepath: str) -> str:
         """
-        Uploads an in-memory byte stream to OneDrive.
+        Uploads a file from a local path to OneDrive.
         Uses a standard PUT for files <=4MB and a chunked resumable session for larger files.
         """
         # Fetch a fresh token for this specific upload
         current_token: str = self.get_token()
+
+        with open(filepath, "rb") as f:
+            data: bytes = f.read()
+
+        filename = os.path.basename(filepath)
 
         size: int = len(data)
         base_url: str = f"https://graph.microsoft.com/v1.0/me/drive/root:/Documents/My%20Life%20and%20Worldview/{quote(filename)}"
@@ -276,6 +282,13 @@ class OneDriveClient:
                     time.sleep(2 ** attempt)
                 else:
                     raise RuntimeError(f"Failed to upload chunk {start}-{end} after {max_retries} attempts.")
+
+        if os.path.exists(filepath):
+            os.remove(filepath)
+
+        del data
+        data_view.release()  # Explicitly release the memoryview
+        gc.collect()  # Force garbage collection to free memory immediately
 
         return last_response.json().get("webUrl", "") if last_response else ""
 
@@ -549,6 +562,7 @@ class MarkdownMap:
         self.output_path: str = title.replace(" ", "_") + ".md"
         self.title: str = title
         self.file: Optional[IO[str]] = None
+        self.open()
 
     def open(self) -> None:
         """Opens the file stream with explicit UTF-8 encoding."""
@@ -720,7 +734,6 @@ class TransferSession:
         Coordinates the verification, population, and synchronization of Zotero records
         leveraging the internal naming state.
         """
-        self.naming_context.file2context(resolved_filename)
 
         if self.dry_run:
             logger.info(f"  -> [DRY RUN] Simulating Zotero Item Sync for: '{self.naming_context.title}'")
@@ -793,8 +806,6 @@ class TransferSession:
         Coordinates global namespace uniqueness. Calculates the necessary alpha suffix
         and updates the shared ResearchFileContext state if a collision occurs.
         """
-        # Load the file into the context machine once to initialize its properties
-        self.naming_context.file2context(filename)
 
         # Generate the standard un-suffixed filename
         candidate_name = self.naming_context.gen_name()
@@ -905,6 +916,7 @@ class TransferSession:
                         g_filename=item_name, 
                         mime_type=target_mime, 
                         md5_checksum=md5_checksum, # Shortcuts don't have md5s, so it will download to check
+                        map_engine=self.map_engine,
                         collection_id=current_collection_id,
                         depth=depth + 1
                     )
@@ -927,6 +939,7 @@ class TransferSession:
                     g_filename=item_name, 
                     mime_type=mime_type, 
                     md5_checksum=md5_checksum,
+                    map_engine=self.map_engine,
                     collection_id=current_collection_id,
                     depth=depth + 1
                 )
@@ -937,6 +950,7 @@ class TransferSession:
                 g_filename: str,
                 mime_type: str,
                 md5_checksum: Optional[str],
+                map_engine: MarkdownMap,
                 collection_id: str,
                 depth: int
             ) -> None:
@@ -952,66 +966,62 @@ class TransferSession:
             cached_data = self.checkpoint[g_file_id]
 
             # Rapidly restore the Freeplane node from the cached history
-            self.map_engine.add_file(
-                cached_data.get("resolved_name", g_filename),
-                cached_data.get("zotero_uri"),
-                cached_data.get("onedrive_url"),
-                depth
+            map_engine.add_file(
+                filename=cached_data.get("resolved_name", g_filename),
+                zotero_uri=cached_data.get("zotero_uri"),
+                onedrive_url=cached_data.get("onedrive_url"),
+                depth=depth
             )
             return
 
         logger.info(f"Processing File: '{g_filename}'")
 
         onedrive_url: str = ""
-        file_bytes: Optional[bytes] = None
-        real_filename: str = g_filename
         is_duplicate: bool = False
+        self.naming_context.file2context(g_filename)
+        resolved_name = self.unique_name(g_filename)
 
         # 2. Smart Deduplication (Pre-Download Check)
         if md5_checksum and md5_checksum in self.content_map:
             logger.info(f"  -> Smart Deduplication: Exact hash match found globally before download.")
             onedrive_url = self.content_map[md5_checksum]
             is_duplicate = True
-
-            # We still need to parse the naming rules for Zotero and the Map
-            self.naming_context.file2context(real_filename)
-            resolved_name = self.unique_name(real_filename)
         else:
             # 3. Data Ingestion
-            download_result = self.gdrive.download_file(g_file_id, mime_type, g_filename)
-            if not download_result:
+            temp_file_path: str = self.gdrive.download_file(g_file_id, mime_type, g_filename)
+            if not temp_file_path:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
                 return  # Helper method logs the specific skip/failure reason
-
-            file_bytes, real_filename = download_result
-
-            # Namespace Integrity
-            self.naming_context.file2context(real_filename)
-            resolved_name = self.unique_name(real_filename)
 
             # Secondary Deduplication Check for Workspace files (no native md5)
             if not md5_checksum:
-                md5_checksum = self.calc_stream_hash(file_bytes)
+                hasher = hashlib.md5()
+                with open(temp_file_path, "rb") as f:
+                    for data_chunk in iter(lambda: f.read(65536), b""):
+                        hasher.update(data_chunk)
+                md5_checksum = hasher.hexdigest()
+
                 if md5_checksum in self.content_map:
                     logger.info(f"  -> Post-Download Deduplication: Exact binary match found.")
                     onedrive_url = self.content_map[md5_checksum]
                     is_duplicate = True
 
-            # 4. Physical Sync: Upload to Microsoft OneDrive
-            if not is_duplicate:
-                if self.dry_run:
-                    logger.info(f"  -> [DRY RUN] Simulating OneDrive upload for: '{resolved_name}'")
-                    onedrive_url = f"https://onedrive.mock/dry_run/{quote(resolved_name)}"
-                else:
-                    logger.info(f"  -> Uploading to OneDrive as: '{resolved_name}'")
-                    # Suppress the Pylance type warning since we know file_bytes is not None here
-                    onedrive_url = self.onedrive.upload_file(resolved_name, file_bytes) # type: ignore
+        # 4. Physical Sync: Upload to Microsoft OneDrive
+        if not is_duplicate:
+            if self.dry_run:
+                logger.info(f"  -> [DRY RUN] Simulating OneDrive upload for: '{resolved_name}'")
+                onedrive_url = f"https://onedrive.mock/dry_run/{quote(resolved_name)}"
+            else:
+                logger.info(f"  -> Uploading to OneDrive as: '{resolved_name}'")
+                onedrive_url = self.onedrive.upload_file(temp_file_path) # type: ignore
 
-                    if not onedrive_url:
-                        logger.error(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
-                        return
+                if not onedrive_url:
+                    logger.error(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
+                    return
 
-                # Log the newly minted hash to the global content map
-                self.content_map[md5_checksum] = onedrive_url
+            # Log the newly minted hash to the global content map
+            self.content_map[md5_checksum] = onedrive_url
 
         # 5. Relational Sync: Zotero Database
         logger.info(f"  -> Synchronizing Zotero metadata...")
@@ -1022,11 +1032,11 @@ class TransferSession:
         )
 
         # 6. Visual Hierarchy Sync: Freeplane XML
-        self.map_engine.add_file(resolved_name, zotero_uri, onedrive_url, depth)
+        map_engine.add_file(resolved_name, zotero_uri, onedrive_url, depth)
 
         # 7. Checkpoint Integrity: Record Success and Persist State
         self.checkpoint[g_file_id] = {
-            "original_name": real_filename,
+            "original_name": g_filename,
             "resolved_name": resolved_name,
             "onedrive_url": onedrive_url,
             "zotero_uri": zotero_uri,
