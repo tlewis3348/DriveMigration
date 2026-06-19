@@ -552,7 +552,9 @@ class ResearchFileContext:
     def gen_name(self) -> str:
         """Assembles and truncates the filename using ONLY internal state properties."""
         if not self._base_prefix:
-            # Non-static files remain exactly as is with no modifications
+            # Non-static files remain as is, but must absorb the uniqueness suffix if initialized
+            if self.alpha_suffix:
+                return f"{self.title} ({self.alpha_suffix}){self.ext}"
             return f"{self.title}{self.ext}"
 
         title_clean: str = self._sanitize(self.title)
@@ -922,8 +924,16 @@ class TransferSession:
             # Feed the calculated suffix directly to the context state
             self.naming_context.alpha_suffix = suffix
 
+            previous_candidate = candidate_name
+
             # Re-evaluate the filename string calculated by the context engine
             candidate_name = self.naming_context.gen_name()
+
+            if candidate_name == previous_candidate:
+                # Force-append suffix as a fallback structural variation to break collision loops
+                name_base, ext = os.path.splitext(candidate_name)
+                candidate_name = f"{name_base} ({suffix}){ext}"
+
             ascii_pointer += 1
 
         self.used_names.add(candidate_name)
