@@ -375,9 +375,9 @@ class ZoteroClient:
         return items
 
 class ResearchFileContext:
-    def __init__(self, filename_limit: int = 200, extension: str = ".pdf"):
+    def __init__(self, filename_limit: int = 200):
         self.limit: int = filename_limit
-        self.ext: str = extension
+        self.ext: Optional[str] = None
 
         # Unified State Configuration representing the active file being handled
         self.raw_input: str = ""
@@ -405,7 +405,7 @@ class ResearchFileContext:
     def prefix(self) -> str:
         return f"{self._base_prefix}{self.alpha_suffix}"
 
-    def file2context(self, filename: str) -> None:
+    def file2context(self, filename: str, mime_type: Optional[str] = None) -> None:
         """
         Ingests a raw Google Drive filename, extracts its metadata, 
         and calculates the true publication date from the filename prefix.
@@ -413,7 +413,46 @@ class ResearchFileContext:
         """
         self.raw_input = filename
         self.alpha_suffix = ""
-        name_no_ext: str = os.path.splitext(filename)[0]
+
+        # Map Google Workspace items to their standard converted Office XML extensions
+        export_map: Dict[str, str] = {
+            "application/vnd.google-apps.document": ".docx",
+            "application/vnd.google-apps.spreadsheet": ".xlsx",
+            "application/vnd.google-apps.presentation": ".pptx"
+        }
+
+        name_no_ext: str; ext: str
+        name_no_ext, ext = os.path.splitext(filename)
+
+        if mime_type in export_map and not ext.lower().endswith(export_map[mime_type]):
+            ext = export_map[mime_type]
+
+        self.ext = ext
+
+        # Define non-static/mutable document signatures
+        mutable_mimes: Set[str] = {
+            "application/vnd.google-apps.document",
+            "application/vnd.google-apps.spreadsheet",
+            "application/vnd.google-apps.presentation",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint"
+        }
+        mutable_extensions: Set[str] = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt", ".odt", ".ods", ".odp"}
+
+        if (mime_type in mutable_mimes) or (self.ext.lower() in mutable_extensions):
+            # Enforce non-static document logic: keep name exactly as-is, bypass metadata mapping
+            self.title = name_no_ext
+            self.authors = [""]
+            self.source = ""
+            self._base_prefix = ""
+            self.is_research_format = False
+            self.full_date = None
+            self.page_number = None
+            return
 
         # Stage 1: Isolate and extract chronological prefix elements if present
         prefix_pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s*(.*)$"
@@ -503,6 +542,10 @@ class ResearchFileContext:
 
     def gen_name(self) -> str:
         """Assembles and truncates the filename using ONLY internal state properties."""
+        if not self._base_prefix:
+            # Non-static files remain exactly as is with no modifications
+            return f"{self.title}{self.ext}"
+
         title_clean: str = self._sanitize(self.title)
         source_clean: str = self._sanitize(self.source)
 
@@ -519,7 +562,7 @@ class ResearchFileContext:
         if len(name) <= self.limit:
             return name
 
-        fixed_len: int = len(self.prefix) + 1 + 3 + len(author_str) + 2 + len(source_clean) + len(self.ext)
+        fixed_len: int = len(self.prefix) + 1 + 3 + len(author_str) + 2 + len(source_clean) + len(str(self.ext))
         max_title_len: int = self.limit - fixed_len - 3
 
         if max_title_len > 0:
@@ -814,6 +857,12 @@ class TransferSession:
                 "publisher": self.naming_context.source
             }
 
+            # Only add date field parameters if a real prefix or full date exists
+            if self.naming_context.full_date:
+                new_item_payload["date"] = self.naming_context.full_date
+            elif self.naming_context.prefix:
+                new_item_payload["date"] = self.naming_context.prefix.split(".")[0]
+
             if self.naming_context.page_number:
                 new_item_payload["pages"] = self.naming_context.page_number
             if self.naming_context.is_research_format:
@@ -1013,7 +1062,7 @@ class TransferSession:
 
         onedrive_url: str = ""
         is_duplicate: bool = False
-        self.naming_context.file2context(g_filename)
+        self.naming_context.file2context(g_filename, mime_type)
         resolved_name = self.unique_name(g_filename)
 
         # 2. Smart Deduplication (Pre-Download Check)
