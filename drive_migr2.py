@@ -474,11 +474,20 @@ class ResearchFileContext:
             
             remainder = remainder.strip()
         else:
-            self._base_prefix = "0000.0.000"
+            # Check if the filename begins with an isolated number sequence
+            num_match: Optional[re.Match[str]] = re.match(r"^(\d+)\s*[\-_.]?\s*(.*)$", name_no_ext.strip())
+            if num_match:
+                num_str: str; rest: str
+                num_str, rest = num_match.groups()
+                self._base_prefix = f"0000.0.{int(num_str):03d}"
+                remainder: str = rest.strip()
+            else:
+                self._base_prefix = "0000.0.000"
+                remainder: str = name_no_ext.strip()
+
             self.is_research_format = False
             self.full_date = None
             self.page_number = None
-            remainder = name_no_ext.strip()
 
         # Stage 2: Structural tokenization of remaining string metadata
         # Scenario A: Full Metadata Pattern Match (Title - Author, Source)
