@@ -409,21 +409,19 @@ class ResearchFileContext:
         """
         Ingests a raw Google Drive filename, extracts its metadata, 
         and calculates the true publication date from the filename prefix.
+        Accommodates partial metadata instances without dropping valid prefixes.
         """
         self.raw_input = filename
         self.alpha_suffix = ""
         name_no_ext: str = os.path.splitext(filename)[0]
 
-        pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s+(.+?)\s+-\s+([^,]+),\s+(.+)$"
-        match: Optional[re.Match[str]] = re.match(pattern, name_no_ext)
+        # Stage 1: Isolate and extract chronological prefix elements if present
+        prefix_pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s*(.*)$"
+        prefix_match: Optional[re.Match[str]] = re.match(prefix_pattern, name_no_ext)
 
-        if match:
-            year_str: str; q_str: str; ref: str; title: str; author_str: str; source: str
-            year_str, q_str, ref, title, author_str, source = match.groups()
-
-            self.title = title.strip()
-            self.authors = [a.strip() for a in author_str.split("+")]
-            self.source = source.strip()
+        if prefix_match:
+            year_str: str; q_str: str; ref: str; remainder: str
+            year_str, q_str, ref, remainder = prefix_match.groups()
             self._base_prefix = f"{year_str}.{q_str}.{ref}"
             self.is_research_format = True
 
@@ -434,14 +432,51 @@ class ResearchFileContext:
             else:
                 self.full_date = None
                 self.page_number = ref
+            
+            remainder = remainder.strip()
         else:
-            self.title = name_no_ext
-            self.authors = ["Unknown"]
-            self.source = "Unsorted"
             self._base_prefix = "0000.0.000"
+            self.is_research_format = False
             self.full_date = None
             self.page_number = None
-            self.is_research_format = False
+            remainder = name_no_ext.strip()
+
+        # Stage 2: Structural tokenization of remaining string metadata
+        # Scenario A: Full Metadata Pattern Match (Title - Author, Source)
+        full_meta_pattern: str = r"^(.+?)\s+-\s+([^,]+),\s+(.+)$"
+        full_match: Optional[re.Match[str]] = re.match(full_meta_pattern, remainder)
+
+        if full_match:
+            title: str; author_str: str; source: str
+            title, author_str, source = full_match.groups()
+            self.title = title.strip()
+            self.authors = [a.strip() for a in author_str.split("+")]
+            self.source = source.strip()
+        else:
+            # Scenario B: Partial Metadata Pattern Match (Title - Author OR Source, no comma)
+            partial_meta_pattern: str = r"^(.+?)\s+-\s+(.+)$"
+            partial_match: Optional[re.Match[str]] = re.match(partial_meta_pattern, remainder)
+
+            if partial_match:
+                title: str; trailing_token: str
+                title, trailing_token = partial_match.groups()
+                title_clean: str = title.strip()
+                token_clean: str = trailing_token.strip()
+
+                # Domain verification: checks for a dot followed by a standard TLD suffix
+                if re.search(r"\.[a-z]{2,6}$", token_clean.lower()):
+                    self.title = title_clean
+                    self.authors = ["Unknown"]
+                    self.source = token_clean
+                else:
+                    self.title = title_clean
+                    self.authors = [a.strip() for a in token_clean.split("+")]
+                    self.source = "Unsourced"
+            else:
+                # Scenario C: Unstructured Fallback (Entire remainder treated as Title)
+                self.title = remainder
+                self.authors = ["Unknown"]
+                self.source = "Unsourced"
 
     def zotero2context(self, item_data: Dict[str, Any]) -> None:
         """
