@@ -677,7 +677,7 @@ class MarkdownMap:
         if links_str:
             links_str = f" ({links_str})"
 
-        self.file.write(f"{"\t" * depth}- {links_str}{filename}\n")
+        self.file.write(f"{"\t" * depth}- {filename}{links_str}\n")
 
     def close(self) -> None:
         """Safely flushes and closes the file stream."""
