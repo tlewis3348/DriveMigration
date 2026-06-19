@@ -1081,72 +1081,85 @@ class TransferSession:
 
         onedrive_url: str = ""
         is_duplicate: bool = False
-        self.naming_context.file2context(g_filename, mime_type)
-        resolved_name = self.unique_name(g_filename)
 
-        # 2. Smart Deduplication (Pre-Download Check)
-        if md5_checksum and md5_checksum in self.content_map:
-            logger.info(f"  -> Smart Deduplication: Exact hash match found globally before download.")
-            onedrive_url = self.content_map[md5_checksum]
-            is_duplicate = True
-        else:
-            # 3. Data Ingestion
-            temp_file_path: Optional[str] = self.gdrive.download_file(g_file_id, mime_type, g_filename)
-            if not temp_file_path:
-                return  # Helper method logs the specific skip/failure reason
+        # Track scratchpad location at the method scope level for the cleanup engine
+        temp_file_path: Optional[str] = None
 
-            # Secondary Deduplication Check for Workspace files (no native md5)
-            if not md5_checksum:
-                hasher = hashlib.md5()
-                with open(temp_file_path, "rb") as f:
-                    for data_chunk in iter(lambda: f.read(65536), b""):
-                        hasher.update(data_chunk)
-                md5_checksum = hasher.hexdigest()
+        try:
+            self.naming_context.file2context(g_filename, mime_type)
+            resolved_name = self.unique_name(g_filename)
 
-                if md5_checksum in self.content_map:
-                    logger.info(f"  -> Post-Download Deduplication: Exact binary match found.")
-                    onedrive_url = self.content_map[md5_checksum]
-                    is_duplicate = True
-
-        # 4. Physical Sync: Upload to Microsoft OneDrive
-        if not is_duplicate:
-            if self.dry_run:
-                logger.info(f"  -> [DRY RUN] Simulating OneDrive upload for: '{resolved_name}'")
-                onedrive_url = f"https://onedrive.mock/dry_run/{quote(resolved_name)}"
+            # 2. Smart Deduplication (Pre-Download Check)
+            if md5_checksum and md5_checksum in self.content_map:
+                logger.info(f"  -> Smart Deduplication: Exact hash match found globally before download.")
+                onedrive_url = self.content_map[md5_checksum]
+                is_duplicate = True
             else:
-                logger.info(f"  -> Uploading to OneDrive as: '{resolved_name}'")
-                onedrive_url = self.onedrive.upload_file(temp_file_path) # type: ignore
+                # 3. Data Ingestion
+                temp_file_path: Optional[str] = self.gdrive.download_file(g_file_id, mime_type, g_filename)
+                if not temp_file_path:
+                    return  # Helper method logs the specific skip/failure reason
 
-                if not onedrive_url:
-                    logger.error(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
-                    return
+                # Secondary Deduplication Check for Workspace files (no native md5)
+                if not md5_checksum:
+                    hasher = hashlib.md5()
+                    with open(temp_file_path, "rb") as f:
+                        for data_chunk in iter(lambda: f.read(65536), b""):
+                            hasher.update(data_chunk)
+                    md5_checksum = hasher.hexdigest()
 
-            # Log the newly minted hash to the global content map
-            self.content_map[md5_checksum] = onedrive_url
+                    if md5_checksum in self.content_map:
+                        logger.info(f"  -> Post-Download Deduplication: Exact binary match found.")
+                        onedrive_url = self.content_map[md5_checksum]
+                        is_duplicate = True
 
-        # 5. Relational Sync: Zotero Database
-        logger.info(f"  -> Synchronizing Zotero metadata...")
-        zotero_uri = self.sync_item(
-            resolved_filename=resolved_name,
-            onedrive_url=onedrive_url,
-            collection_id=collection_id
-        )
+            # 4. Physical Sync: Upload to Microsoft OneDrive
+            if not is_duplicate:
+                if self.dry_run:
+                    logger.info(f"  -> [DRY RUN] Simulating OneDrive upload for: '{resolved_name}'")
+                    onedrive_url = f"https://onedrive.mock/dry_run/{quote(resolved_name)}"
+                else:
+                    logger.info(f"  -> Uploading to OneDrive as: '{resolved_name}'")
+                    onedrive_url = self.onedrive.upload_file(temp_file_path) # type: ignore
 
-        # 6. Visual Hierarchy Sync: Freeplane XML
-        map_engine.add_file(resolved_name, zotero_uri, onedrive_url, depth)
+                    if not onedrive_url:
+                        logger.error(f"  -> Error: OneDrive upload failed for '{resolved_name}'.")
+                        return
 
-        # 7. Checkpoint Integrity: Record Success and Persist State
-        self.checkpoint[g_file_id] = {
-            "original_name": g_filename,
-            "resolved_name": resolved_name,
-            "onedrive_url": onedrive_url,
-            "zotero_uri": zotero_uri,
-            "timestamp": datetime.now().isoformat()
-        }
+                # Log the newly minted hash to the global content map
+                self.content_map[md5_checksum] = onedrive_url
 
-        # Saves to disk ONLY if no exceptions were thrown during APIs
-        self.save_state()
-        logger.info(f"  -> Success: '{resolved_name}' migration complete.")
+            # 5. Relational Sync: Zotero Database
+            logger.info(f"  -> Synchronizing Zotero metadata...")
+            zotero_uri = self.sync_item(
+                resolved_filename=resolved_name,
+                onedrive_url=onedrive_url,
+                collection_id=collection_id
+            )
+
+            # 6. Visual Hierarchy Sync: Freeplane XML
+            map_engine.add_file(resolved_name, zotero_uri, onedrive_url, depth)
+
+            # 7. Checkpoint Integrity: Record Success and Persist State
+            self.checkpoint[g_file_id] = {
+                "original_name": g_filename,
+                "resolved_name": resolved_name,
+                "onedrive_url": onedrive_url,
+                "zotero_uri": zotero_uri,
+                "timestamp": datetime.now().isoformat()
+            }
+
+            # Saves to disk ONLY if no exceptions were thrown during APIs
+            self.save_state()
+            logger.info(f"  -> Success: '{resolved_name}' migration complete.")
+        finally:
+            # 8. Cleanup Engine: Ensures temporary files are removed to prevent local storage bloat
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                    logger.debug(f"  -> Physical scratchpad file cleanly unlinked: '{temp_file_path}'")
+                except OSError as e:
+                    logger.warning(f"  -> OS lock prevented deletion of temp asset '{temp_file_path}': {e}")
     # endregion
 
 if __name__ == "__main__":
