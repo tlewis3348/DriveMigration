@@ -409,7 +409,8 @@ class ResearchFileContext:
         """
         Ingests a raw Google Drive filename, extracts its metadata, 
         and calculates the true publication date from the filename prefix.
-        Accommodates partial metadata instances without dropping valid prefixes.
+        Accommodates partial metadata instances and parses from the rightmost delimiter.
+        Evaluates structural pattern intent before short-circuiting mutable document types.
         """
         self.raw_input = filename
         self.alpha_suffix = ""
@@ -427,7 +428,7 @@ class ResearchFileContext:
         if mime_type in export_map and not ext.lower().endswith(export_map[mime_type]):
             ext = export_map[mime_type]
 
-        self.ext = ext
+        self.ext = ext.lower()
 
         # Define non-static/mutable document signatures
         mutable_mimes: Set[str] = {
@@ -443,80 +444,95 @@ class ResearchFileContext:
         }
         mutable_extensions: Set[str] = {".docx", ".xlsx", ".pptx", ".doc", ".xls", ".ppt", ".odt", ".ods", ".odp"}
 
-        if (mime_type in mutable_mimes) or (self.ext.lower() in mutable_extensions):
-            # Enforce non-static document logic: keep name exactly as-is, bypass metadata mapping
-            self.title = name_no_ext
-            self.authors = [""]
-            self.source = ""
-            self._base_prefix = ""
-            self.is_research_format = False
-            self.full_date = None
-            self.page_number = None
-            return
+        is_mutable_format: bool = (mime_type in mutable_mimes) or (self.ext in mutable_extensions)
 
-        # Stage 1: Isolate and extract chronological prefix elements if present
+        # ---------------------------------------------------------
+        # STAGE 1: Check for structural chronological prefixes or track ordering
+        # ---------------------------------------------------------
         prefix_pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s*(.*)$"
         prefix_match: Optional[re.Match[str]] = re.match(prefix_pattern, name_no_ext)
 
+        has_structured_prefix: bool = False
+        has_leading_sequence: bool = False
+
         if prefix_match:
-            year_str: str; q_str: str; ref: str; remainder: str
-            year_str, q_str, ref, remainder = prefix_match.groups()
+            year_str: str; q_str: str; ref: str; remainder_raw: str
+            year_str, q_str, ref, remainder_raw = prefix_match.groups()
             self._base_prefix = f"{year_str}.{q_str}.{ref}"
             self.is_research_format = True
+            has_structured_prefix = True
 
-            # REVERSE CALCULATE: Map the prefix variables back to a real ISO date
             if ref.startswith("D"):
                 self.full_date = self._date2pre(year_str, q_str, ref)
                 self.page_number = None
             else:
                 self.full_date = None
                 self.page_number = ref
-            
-            remainder = remainder.strip()
+
+            remainder = remainder_raw.strip()
         else:
             # Check for leading numbers OR case-insensitive "Part [N]" sequences
             num_match: Optional[re.Match[str]] = re.match(r"^(?:Part\s+)?(\d+)\s*[\-_.]?\s*(.*)$", name_no_ext.strip(), re.IGNORECASE)
             if num_match:
-                num_str: str; rest: str
                 num_str, rest = num_match.groups()
                 self._base_prefix = f"0000.0.{int(num_str):03d}"
-                remainder: str = rest.strip()
+                remainder = rest.strip()
+                has_leading_sequence = True
             else:
                 self._base_prefix = "0000.0.000"
-                remainder: str = name_no_ext.strip()
+                remainder = name_no_ext.strip()
 
             self.is_research_format = False
             self.full_date = None
             self.page_number = None
 
-        # Stage 2: Structural tokenization of remaining string metadata from the rightmost block
-        if " - " in remainder:
-            # Force partition at the LAST occurrence of " - "
+        # ---------------------------------------------------------
+        # STAGE 2: Core Pattern Intent & Short-Circuit Evaluation
+        # ---------------------------------------------------------
+        has_rightmost_delimiter: bool = " - " in remainder
+
+        # Check if this file has zero metadata structural markers whatsoever
+        if not (has_structured_prefix or has_leading_sequence or has_rightmost_delimiter):
+            if is_mutable_format:
+                # Target Path: True unpatterned mutable asset -> preserve name exactly as-is
+                self.title = name_no_ext
+                self.authors = [""]
+                self.source = ""
+                self._base_prefix = ""
+                return
+            else:
+                # Target Path: Messy unpatterned static asset -> drop to unstructured fallback
+                self.title = remainder.replace(" - ", ", ")
+                self.authors = ["Unknown"]
+                self.source = "Unsourced"
+                return
+
+        # ---------------------------------------------------------
+        # STAGE 3: Structural Metadata Tokenization (From Rightmost Split)
+        # ---------------------------------------------------------
+        if has_rightmost_delimiter:
             left_block, trailing_token = remainder.rsplit(" - ", 1)
-            
-            # Replace any internal " - " blocks in the title region with ", "
             left_block_cleaned = left_block.replace(" - ", ", ").strip()
             trailing_token = trailing_token.strip()
 
-            # Handle structural parsing of trailing token block
-            if "," in trailing_token:
+            if ", " in trailing_token:
                 # Scenario A: Full Metadata (Author, Source)
-                author_str, source_str = trailing_token.split(",", 1)
+                author_str, source_str = trailing_token.split(", ", 1)
                 self.title = left_block_cleaned
                 self.authors = [a.strip() for a in author_str.split("+")]
-                self.source = source_str.replace(" ", "")
+                self.source = source_str
             else:
-                # Scenario B: Partial Metadata (Inspect for Domain Signature)
+                # Scenario B: Partial Metadata (Domain validation vs Author tracking)
                 if re.search(r"\.[a-z]{2,6}$", trailing_token.lower()):
                     self.title = left_block_cleaned
                     self.authors = ["Unknown"]
-                    self.source = trailing_token.replace(" ", "")
+                    self.source = trailing_token
                 else:
                     self.title = left_block_cleaned
                     self.authors = [a.strip() for a in trailing_token.split("+")]
                     self.source = "Unsourced"
         else:
-            # Scenario C: Unstructured Fallback
+            # Reached if the file had a prefix or sequence number but no " - " division block
             self.title = remainder.replace(" - ", ", ")
             self.authors = ["Unknown"]
             self.source = "Unsourced"
