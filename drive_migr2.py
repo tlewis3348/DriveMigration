@@ -474,8 +474,8 @@ class ResearchFileContext:
             
             remainder = remainder.strip()
         else:
-            # Check if the filename begins with an isolated number sequence
-            num_match: Optional[re.Match[str]] = re.match(r"^(\d+)\s*[\-_.]?\s*(.*)$", name_no_ext.strip())
+            # Check for leading numbers OR case-insensitive "Part [N]" sequences
+            num_match: Optional[re.Match[str]] = re.match(r"^(?:Part\s+)?(\d+)\s*[\-_.]?\s*(.*)$", name_no_ext.strip(), re.IGNORECASE)
             if num_match:
                 num_str: str; rest: str
                 num_str, rest = num_match.groups()
@@ -489,42 +489,37 @@ class ResearchFileContext:
             self.full_date = None
             self.page_number = None
 
-        # Stage 2: Structural tokenization of remaining string metadata
-        # Scenario A: Full Metadata Pattern Match (Title - Author, Source)
-        full_meta_pattern: str = r"^(.+?)\s+-\s+([^,]+),\s+(.+)$"
-        full_match: Optional[re.Match[str]] = re.match(full_meta_pattern, remainder)
+        # Stage 2: Structural tokenization of remaining string metadata from the rightmost block
+        if " - " in remainder:
+            # Force partition at the LAST occurrence of " - "
+            left_block, trailing_token = remainder.rsplit(" - ", 1)
+            
+            # Replace any internal " - " blocks in the title region with ", "
+            left_block_cleaned = left_block.replace(" - ", ", ").strip()
+            trailing_token = trailing_token.strip()
 
-        if full_match:
-            title: str; author_str: str; source: str
-            title, author_str, source = full_match.groups()
-            self.title = title.strip()
-            self.authors = [a.strip() for a in author_str.split("+")]
-            self.source = source.strip()
-        else:
-            # Scenario B: Partial Metadata Pattern Match (Title - Author OR Source, no comma)
-            partial_meta_pattern: str = r"^(.+?)\s+-\s+(.+)$"
-            partial_match: Optional[re.Match[str]] = re.match(partial_meta_pattern, remainder)
-
-            if partial_match:
-                title: str; trailing_token: str
-                title, trailing_token = partial_match.groups()
-                title_clean: str = title.strip()
-                token_clean: str = trailing_token.strip()
-
-                # Domain verification: checks for a dot followed by a standard TLD suffix
-                if re.search(r"\.[a-z]{2,6}$", token_clean.lower()):
-                    self.title = title_clean
-                    self.authors = ["Unknown"]
-                    self.source = token_clean
-                else:
-                    self.title = title_clean
-                    self.authors = [a.strip() for a in token_clean.split("+")]
-                    self.source = "Unsourced"
+            # Handle structural parsing of trailing token block
+            if "," in trailing_token:
+                # Scenario A: Full Metadata (Author, Source)
+                author_str, source_str = trailing_token.split(",", 1)
+                self.title = left_block_cleaned
+                self.authors = [a.strip() for a in author_str.split("+")]
+                self.source = source_str.replace(" ", "")
             else:
-                # Scenario C: Unstructured Fallback (Entire remainder treated as Title)
-                self.title = remainder
-                self.authors = ["Unknown"]
-                self.source = "Unsourced"
+                # Scenario B: Partial Metadata (Inspect for Domain Signature)
+                if re.search(r"\.[a-z]{2,6}$", trailing_token.lower()):
+                    self.title = left_block_cleaned
+                    self.authors = ["Unknown"]
+                    self.source = trailing_token.replace(" ", "")
+                else:
+                    self.title = left_block_cleaned
+                    self.authors = [a.strip() for a in trailing_token.split("+")]
+                    self.source = "Unsourced"
+        else:
+            # Scenario C: Unstructured Fallback
+            self.title = remainder.replace(" - ", ", ")
+            self.authors = ["Unknown"]
+            self.source = "Unsourced"
 
     def zotero2context(self, item_data: Dict[str, Any]) -> None:
         """
