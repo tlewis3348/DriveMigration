@@ -158,3 +158,8 @@ This visualization confirms that your current `depth` logic is the correct way t
 ## 2. Provider Agnosticism & Template Customization
 * [ ] **Abstract Cloud Storage Access Layers**: Decouple the data attachment logic from Microsoft Graph. Build interface adapters to allow users to select from a wider array of storage backends (e.g., local hard drives, Proton Drive, Nextcloud, or standard SFTP servers).
 * [ ] **Implement a Dynamic Filename Template Engine**: Create a configuration parser that allows users to write custom formatting strings (e.g., [Prefix] [Author] - [Title]) using the metadata dictionary. The engine must automatically rename physical files and update Zotero attachments globally based on the active template rules.
+
+## 3. Merge Textual Content with Map Structure (for Bible Content)
+- [ ] Implement a Polymorphic Layout Engine inside the Phase B Canvas UI that enforces a strict three-tier object architecture: (1) Hierarchical Levels/Containers, (2) Invariant Text, and (3) Attached Files/Assets.
+	- [ ] Establish an absolute visual priority rule where Text blocks natively supersede File assets on the rendering pipeline, locking them as lateral footnotes or minimized metadata indicators adjacent to the scriptural line.
+	- [ ] Program a conditional coordinate axis transformation: apply a Radiant/Spatial arrangement to distribute pure organizational container nodes compactly across the 2D plane, but instantly force a Strict Linear/Indented layout axis for any sub-tree containing textual content to preserve sequential reading comprehension down to micro-grammatical syntax tiers.
