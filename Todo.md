@@ -134,20 +134,27 @@ This visualization confirms that your current `depth` logic is the correct way t
 
 # Version 3 Features
 
-## 1. Spatial Multi-Scale Rendering Layer ("Google Maps" UI)
-* [ ] **Implement Infinite Pan and Zoom Mechanics**: Code a 2D camera matrix transform layer that interprets trackpad scrolls, mouse drags, and mobile touch gestures (pinch-to-zoom) into deterministic coordinates on an infinite mathematical grid.
-* [ ] **Construct a Quadtree Spatial Index**: Build an in-memory Quadtree data structure to host every visual element coordinate. Panning the map must trigger localized bounding-box queries (O(log N) complexity) to ensure that only nodes within the viewport boundary are passed to the draw loop, allowing 60 FPS performance on mobile devices.
-* [ ] **Develop Level-of-Detail (LoD) Progressive Disclosure**:
-  * [ ] **Zoom Level 0–2 (Global Category View)**: Display only the macro structural worldview categories (e.g., 01 Theory, 02 Practice) as large, high-contrast anchor hubs. Sub-branches are completely culled from the drawing queue to conserve memory.
-  * [ ] **Zoom Level 3–6 (Regional Sub-Category View)**: Fade mid-level structural folders (e.g., Epistemology, Apologetics) into view as the camera descends. Deep text strings remain hidden.
-  * [ ] **Zoom Level 7+ (Street Level Detail)**: Render the fine details—individual research item filenames, clickable attachment links, and status tags—at full opacity.
+## 1. Relative Focus & Scaling Layer (Focus + Context Hyperbolic View)
+- [ ] **Implement Focus-Centric Dynamic Scaling Mechanics**: Use a relative layout matrix that re-centers and scales the canvas geometry dynamically based on the actively selected node (Focus Node rendered at 100% scale and maximum visual emphasis).
+- [ ] **Construct a Topological Distance Evaluator**: Build an in-memory graph traversal routine that calculates the shortest path steps ($D$) from the currently focused node to all other elements across the Directed Acyclic Graph (DAG).
+- [ ] **Develop Relative Level-of-Detail (LoD) Scaling Rules**:
+  - [ ] **Active Ancestral Path Tiers ($D$ along active parent chains)**: Render all direct upward lines of parentage back to the root categories at a uniform, highly legible scale to maintain instant multi-context visibility.
+  - [ ] **Adjacent Local Branches ($D = 1$ to $3$ off active paths)**: Step down font sizes, line weights, and node boundaries using a decaying exponential modifier ($Scale \propto e^{-D}$) as nodes drift away from the active line of sight.
+  - [ ] **Periphery Global Framework ($D \ge 4$ off active paths)**: Compress the remaining 10,000+ un-focused global nodes into microscopic, low-opacity spatial clusters at the margins of the screen to preserve permanent, concurrent global system context without text layout collision penalties.
 
-## 2. Advanced Topological Topography (Multi-Parent & Relational Proximity)
-* [ ] **Implement Multi-Parent Graph Node Architecture**: Break away from standard tree constraints to allow Graph structures. If a single Zotero item exists in multiple collections (or is targeted by multiple Google Drive shortcuts), the renderer must map incoming directional vectors from all parent nodes to that single physical coordinate point.
-* [ ] **Engineer Cross-Collection Proximity Anchoring ("Geographic Closeness")**:
-  * [ ] Establish an invisible relational weight configuration between distinct collections that reference one another.
-  * [ ] Write a force-directed layout layout subroutine that pulls cross-referenced collections geographically closer to one another on the coordinate map, even if no visible hierarchical lines connect them in the viewport.
-* [ ] **Integrate Protocol Deep-Linking**: Bind touch and click interactions directly to node boundaries. Tapping a visible research node must execute a native system call to trigger the local application handlers (zotero://select/... or your local OneDrive file paths) directly from the desktop or mobile device.
+## 2. Advanced Topological Topography (Multi-Parent Ancestry & Relational Vectors)
+- [ ] **Implement Multi-Parent Structural Branch Convergence**: Enforce multi-parent graph routing at the visualization layer. When an asset or textual node is claimed by multiple parent tracks, the layout engine must converge those discrete paths down to a single physical node on the screen, showing the item executing co-equal membership in multiple hierarchies simultaneously.
+- [ ] **Engineer Focus-Driven Vector Path Highlighting**:
+  - [ ] Program an interactive rendering subroutine that tracks hover or touch selections on multi-parent items.
+  - [ ] Ensure that selecting a multi-parent node instantly illuminates high-contrast directional vector lines tracing upward through all its concurrent parental tracks back to the root macro categories, while dropping irrelevant collateral connections into deep shadow.
+- [ ] **Integrate Protocol Deep-Linking**: Bind touch and click interactions directly to node boundaries. Tapping a visible research node must execute a native system call to trigger local application handlers (e.g., `zotero://select/...` or your local OneDrive physical file paths) directly from the desktop or mobile device interface.
+
+## 3. Responsive Multi-View Architecture (Desktop Panes vs. Mobile Stack)
+- [ ] **Implement View-Separation for High-Density Metadata**: Completely decouple individual file asset listings and metadata profiles from the graphic tree pipeline to maximize map readability.
+- [ ] **Code Responsive Layout Adapters**:
+  - [ ] **Desktop Target Configuration**: Render a synchronized three-pane workspace configuration when widescreen metrics are detected (Left pane: Hyperbolic Map; Middle Pane: Item List; Right Pane: Metadata Details).
+  - [ ] **Mobile Target Configuration**: Enforce a full-screen Viewport Stack mechanism on phone displays (Map occupies full screen; tapping nodes anchors a swipe-up Bottom Sheet for the Item List; selecting items slides a dedicated full-screen view into place for individual Zotero details).
+- [ ] **Establish Multi-View State Synchronization**: Ensure that executing a node selection or focus adjustment in one viewport instantly pushes state changes down to update the adjacent list and detail containers across both platforms.
 
 # Version 4 Features
 
@@ -162,5 +169,6 @@ This visualization confirms that your current `depth` logic is the correct way t
 
 ## 3. Merge Textual Content with Map Structure (for Bible Content)
 - [ ] Implement a Polymorphic Layout Engine inside the Phase B Canvas UI that enforces a strict three-tier object architecture: (1) Hierarchical Levels/Containers, (2) Invariant Text, and (3) Attached Files/Assets.
-	- [ ] Establish an absolute visual priority rule where Text blocks natively supersede File assets on the rendering pipeline, locking them as lateral footnotes or minimized metadata indicators adjacent to the scriptural line.
-	- [ ] Program a conditional coordinate axis transformation: apply a Radiant/Spatial arrangement to distribute pure organizational container nodes compactly across the 2D plane, but instantly force a Strict Linear/Indented layout axis for any sub-tree containing textual content to preserve sequential reading comprehension down to micro-grammatical syntax tiers.
+  - [ ] Establish an absolute visual priority rule where Text blocks natively supersede File assets on the rendering pipeline, locking them as lateral footnotes or minimized metadata indicators adjacent to the scriptural line.
+  - [ ] Program a conditional coordinate axis transformation: apply a Radiant/Spatial arrangement to distribute pure organizational container nodes compactly across the 2D plane, but instantly force a Strict Linear/Indented layout axis for any sub-tree containing textual content to preserve sequential reading comprehension down to micro-grammatical syntax tiers.
+
