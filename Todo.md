@@ -127,6 +127,7 @@ This visualization confirms that your current `depth` logic is the correct way t
   * [X] **Handle Special Cases for Non-Static Files**: Handle special cases for word processing documents, presentations, and spreadsheets (i.e., non-static files): Use the "Document" type in Zotero. Filenames should remain as is with no changes, and metadata should not be attempted to be extracted from the filename.
   * [X] **Sequence Number Fallback**: When a prefix is missing, but the filename begins with a number, use that number as the sequence number in the placeholder prefix (e.g., "0000.0.003").
   * [X] Move the Zotero and OneDrive links to the end of the Markdown map item listing.
+  * [ ] **Handle cases for Bible prefixes**: "00:00-00:00" becomes "00.00-00.00".
 * [ ] **Full Functionality Testing**: After confirming the map structure, run the full migration on a small subset of files to ensure that the API interactions, checkpointing, and deduplication logic work as expected.
 * [ ] **File Statistics**: After migration, generate a report of migrated files, including counts of new Zotero items created, existing items updated, and any files that were skipped due to deduplication.
 * [ ] **Distinguish Between File Owners**: If the file is a Google Docs, Sheets, or Slides format that I created, don't modify the filename. If it is a file created by someone else, apply the same renaming logic.
