@@ -666,7 +666,6 @@ class ResearchFileContext:
 class MarkdownMap:
     """
     Encapsulates the generation of a deeply nested Markdown outline.
-    Replaces the Freeplane XML engine with a text-based hierarchy.
     """
     def __init__(self, title: str) -> None:
         self.output_path: str = title.replace(" ", "_") + ".md"
@@ -679,11 +678,17 @@ class MarkdownMap:
         self.file = open(self.output_path, "w", encoding="utf-8")
         self.file.write(f"# {self.title}\n\n")
 
-    def add_folder(self, folder_name: str, depth: int) -> None:
+    def add_folder(self, folder_name: str, anchor_id: str, depth: int) -> None:
         """Writes a tab-indented folder node with bold formatting."""
         if not self.file:
             raise RuntimeError("Markdown file is not open.")
-        self.file.write(f"{"\t" * depth}- **{folder_name}**\n")
+        self.file.write(f"{"\t" * depth}- **{folder_name}** <a name=\"folder-{anchor_id}\"></a>\n")
+
+    def add_shortcut_link(self, display_name: str, target_anchor: str, depth: int) -> None:
+        """Writes a tab-indented shortcut cross-reference pointing to a predictable anchor."""
+        if not self.file:
+            raise RuntimeError("Markdown file is not open.")
+        self.file.write(f"{"\t" * depth}- [{display_name}](#folder-{target_anchor})\n")
 
     def add_file(self, filename: str, zotero_uri: Optional[str], onedrive_url: Optional[str], depth: int) -> None:
         """Writes a tab-indented file node with inline hyperlink routing."""
@@ -721,15 +726,15 @@ class TransferSession:
         self.root_folder_id: str = os.environ.get("ROOT_FOLDER_ID", "")
 
         if not all(
-                    [
-                        self.google_creds_path,
-                        self.ms_client_id,
-                        self.ms_authority,
-                        self.zotero_user_id,
-                        self.zotero_api_key,
-                        self.root_folder_id
-                    ]
-                ):
+                [
+                    self.google_creds_path,
+                    self.ms_client_id,
+                    self.ms_authority,
+                    self.zotero_user_id,
+                    self.zotero_api_key,
+                    self.root_folder_id
+                ]
+            ):
             raise EnvironmentError("Missing required environment configuration tokens inside .env file.")
 
         # 2. Instantiate API Service Clients (The Physical Layer)
@@ -847,7 +852,7 @@ class TransferSession:
 
         if self.dry_run:
             logger.info(f"  -> [DRY RUN] Simulating Zotero Item Sync for: '{self.naming_context.title}'")
-            # Return a valid Freeplane URI format pointing to a mock item
+            # Return a valid Markdown URI format pointing to a mock item
             return f"zotero://select/library/items/DRY_RUN_{hashlib.md5(resolved_filename.encode('utf-8')).hexdigest()[:8]}"
 
         lookup_key: str = self.naming_context.get_canonical_key()
@@ -985,9 +990,7 @@ class TransferSession:
     # region: TRANSFER LOGIC
     def process_folder(self, g_folder_id: str, parent_zotero_id: Optional[str] = None, depth: int = 0) -> None:
         """
-        Recursively walks the Google Drive directory tree.
-        Mirrors the folder structure into Zotero Collections, builds the Freeplane map hierarchy,
-        and routes individual files to the atomic processor.
+        Recursively walks the Google Drive directory tree. Mirrors the folder structure into Zotero Collections, builds the Markdown map hierarchy with existing cross-linking, and routes individual files to the atomic processor.
         """
         # 1. Fetch Folder Metadata
         folder_name: str = self.gdrive.get_folder_name(g_folder_id)
@@ -996,8 +999,8 @@ class TransferSession:
         # 2. Structural Mapping: Resolve or create the Zotero Collection
         current_collection_id: str = self.sync_collection(folder_name, parent_zotero_id)
 
-        # 3. Visual Mapping: Create the Freeplane Node for this folder
-        self.map_engine.add_folder(folder_name, depth)
+        # 3. Visual Mapping: Create the Markdown Node for this folder
+        self.map_engine.add_folder(folder_name, g_folder_id, depth)
 
         # 4. Fetch all children (files and sub-folders) within this directory
         children: List[Dict[str, Any]] = self.gdrive.get_children(g_folder_id)
@@ -1025,15 +1028,24 @@ class TransferSession:
             mime_type: str = item['mimeType']
             md5_checksum: Optional[str] = item.get('md5Checksum')
 
+            # The item is a folder, so we recursively process its contents
             if mime_type == 'application/vnd.google-apps.folder':
                 # Recursive dive into sub-folders
                 self.process_folder(item_id, current_collection_id, depth + 1)
 
+            # The item is a Google Drive shortcut, which may point to a folder or file
             elif mime_type == 'application/vnd.google-apps.shortcut':
                 # Unpack the shortcut and process the original target
                 target_id = item.get('shortcutDetails', {}).get('targetId')
                 target_mime = item.get('shortcutDetails', {}).get('targetMimeType')
-                if target_mime != 'application/vnd.google-apps.folder':
+
+                # Handle structural shortcuts (folders) differently from file shortcuts
+                if target_mime == "application/vnd.google-apps.folder" and target_id:
+                    self.map_engine.add_shortcut_link(item_name, target_id, depth + 1)
+                    logger.info(f"Recorded structural pointer shortcut: '{item_name}' -> #{target_id}")
+
+                # Handle file shortcuts by processing the target file directly
+                else:
                     logger.info(f"Following shortcut: '{item_name}'")
                     self.process_file(
                         g_file_id=target_id, 
@@ -1045,16 +1057,17 @@ class TransferSession:
                         depth=depth + 1
                     )
 
+            # The item is a non-exportable Google format (Forms, Sites, Maps, etc.)
             elif mime_type.startswith('application/vnd.google-apps.') and mime_type not in [
                 "application/vnd.google-apps.document", 
                 "application/vnd.google-apps.spreadsheet", 
                 "application/vnd.google-apps.presentation",
                 "application/vnd.google-apps.drawing"
             ]:
-                # Skip non-exportable Google formats (Forms, Sites, Maps, etc.)
                 logger.info(f"Skipping non-exportable Google format: '{item_name}'")
                 continue
 
+            # The item is a standard file or an exportable Google document (Docs, Sheets, Slides, Drawings)
             else:
                 # Route standard files and exportable Google documents to the discrete file processor
                 # Passing md5_checksum directly to enable the smart deduplication optimization
@@ -1080,7 +1093,7 @@ class TransferSession:
             ) -> None:
         """
         The atomic data transport loop. Manages downloading, deduplication, 
-        namespace resolution, OneDrive uploading, Zotero integration, and Freeplane mapping.
+        namespace resolution, OneDrive uploading, Zotero integration, and Markdown mapping.
         """
         logger.info(f"Processing file: '{g_filename}'")
 
@@ -1089,7 +1102,7 @@ class TransferSession:
             logger.info(f"Checkpoint Skip: '{g_filename}' already migrated.")
             cached_data = self.checkpoint[g_file_id]
 
-            # Rapidly restore the Freeplane node from the cached history
+            # Rapidly restore the Markdown node from the cached history
             map_engine.add_file(
                 filename=cached_data.get("resolved_name", g_filename),
                 zotero_uri=cached_data.get("zotero_uri"),
@@ -1158,7 +1171,7 @@ class TransferSession:
                 collection_id=collection_id
             )
 
-            # 6. Visual Hierarchy Sync: Freeplane XML
+            # 6. Visual Hierarchy Sync: Markdown
             map_engine.add_file(resolved_name, zotero_uri, onedrive_url, depth)
 
             # 7. Checkpoint Integrity: Record Success and Persist State

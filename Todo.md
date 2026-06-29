@@ -128,12 +128,10 @@ This visualization confirms that your current `depth` logic is the correct way t
   * [X] **Sequence Number Fallback**: When a prefix is missing, but the filename begins with a number, use that number as the sequence number in the placeholder prefix (e.g., "0000.0.003").
   * [X] Move the Zotero and OneDrive links to the end of the Markdown map item listing.
   * [X] **Handle cases for Bible prefixes**: The "00:00-00:00" prefix on a document identifying the Bible passage being addressed is redundant since the hierarchy identifies the passage. Therefore, the prefix should be removed from the filename and the filename should be addressed with the standard algorithm.
-  * [ ] **Implement Immutable Target-ID Anchoring for Folder Shortcuts in `drive_migr2.py`**:
-    * [ ] Create a `self.materialized_folders` tracking set to log folder IDs only when processed at their authentic, primary parental coordinates.
-    * [ ] Update the directory traversal loop to intercept `application/vnd.google-apps.shortcut` objects targeting directories.
-    * [ ] Force the engine to write a predictable Markdown cross-reference link (`[Shortcut Name](#folder-targetId)`) immediately upon encounter, bypassing downstream traversal.
-    * [ ] Prevent shortcuts from dynamically materializing files or duplicate folder structures out of their true taxonomic context, ensuring absolute path uniqueness and protection against infinite cyclic recursion.
-    * [ ] Append a unique HTML anchor tag (`<a name="folder-currentId"></a>`) to every true folder list item written to `My_Life_and_Worldview.md` to serve as the invariant target destination for current and future cross-links.
+  * [X] **Implement Immutable Target-ID Anchoring for Folder Shortcuts**:
+    * [X] Update the directory traversal loop to intercept `application/vnd.google-apps.shortcut` objects targeting directories.
+    * [X] Force the engine to write a predictable Markdown cross-reference link (`[Shortcut Name](#folder-targetId)`) immediately upon encounter, bypassing downstream traversal.
+    * [X] Append a unique HTML anchor tag (`<a name="folder-currentId"></a>`) to every true folder list item written to `My_Life_and_Worldview.md` to serve as the invariant target destination for current and future cross-links.
 * [ ] **Full Functionality Testing**: After confirming the map structure, run the full migration on a small subset of files to ensure that the API interactions, checkpointing, and deduplication logic work as expected.
 * [ ] **File Statistics**: After migration, generate a report of migrated files, including counts of new Zotero items created, existing items updated, and any files that were skipped due to deduplication.
 * [ ] **Distinguish Between File Owners**: If the file is a Google Docs, Sheets, or Slides format that I created, don't modify the filename. If it is a file created by someone else, apply the same renaming logic.
