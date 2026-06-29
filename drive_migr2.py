@@ -447,10 +447,20 @@ class ResearchFileContext:
         is_mutable_format: bool = (mime_type in mutable_mimes) or (self.ext in mutable_extensions)
 
         # ---------------------------------------------------------
+        # PRE-STAGE: Strip Scripture-Range Prefixes (00:00-00:00 or 00.00-00.00)
+        # ---------------------------------------------------------
+        normalized_name = name_no_ext.strip()
+        scripture_prefix_pattern: str = r"^\d{2}[:.]\d{2}-\d{2}[:.]\d{2}\s*[\-_.]?\s*(.*)$"
+        scripture_match = re.match(scripture_prefix_pattern, normalized_name)
+
+        if scripture_match:
+            normalized_name = scripture_match.group(1).strip()
+
+        # ---------------------------------------------------------
         # STAGE 1: Check for structural chronological prefixes or track ordering
         # ---------------------------------------------------------
         prefix_pattern: str = r"^(\d{4})\.(\d)\.([D\d]\d+)\s*(.*)$"
-        prefix_match: Optional[re.Match[str]] = re.match(prefix_pattern, name_no_ext)
+        prefix_match: Optional[re.Match[str]] = re.match(prefix_pattern, normalized_name)
 
         has_structured_prefix: bool = False
         has_leading_sequence: bool = False
